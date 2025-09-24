@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -18,13 +19,14 @@ from ..services import annotate_results_with_quantity
 LOGGER = logging.getLogger(__name__)
 router = APIRouter(prefix="/risk", tags=["risk"])
 
+# Optional: cap portfolio size to protect service (env overrides default 1000)
+_MAX_BATCH = int(os.getenv("OPE_MAX_RISK_CONTRACTS", "1000"))
 
 # ------------------------
 # Validation helpers
 # ------------------------
 def _err(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
-
 
 def _validate_numeric(
     name: str,
@@ -39,7 +41,7 @@ def _validate_numeric(
         raise _err(f"Missing required field: {name}")
     try:
         x = float(value)
-    except (TypeError, ValueError) as exc:  # pragma: no cover - defensive guard
+    except (TypeError, ValueError) as exc:  # pragma: no cover
         raise _err(f"{name} must be a number") from exc
     if gt is not None and not (x > gt):
         raise _err(f"{name} must be > {gt}")
@@ -50,9 +52,7 @@ def _validate_numeric(
     if le is not None and not (x <= le):
         raise _err(f"{name} must be ≤ {le}")
 
-
 def _validate_request_common(req: PricingRequest) -> None:
-    # Market data sanity checks
     md = getattr(req, "market_data", None)
     if md is None:
         raise _err("Missing market_data")
@@ -64,29 +64,26 @@ def _validate_request_common(req: PricingRequest) -> None:
 
     if not req.contracts:
         raise _err("No contracts provided")
+    if len(req.contracts) > _MAX_BATCH:
+        raise _err(f"Too many contracts; limit is { _MAX_BATCH }")
 
     for i, contract in enumerate(req.contracts):
         prefix = f"contracts[{i}]"
         _validate_numeric(f"{prefix}.strike_price", getattr(contract, "strike_price", None), gt=0.0)
-        _validate_numeric(
-            f"{prefix}.time_to_expiry",
-            getattr(contract, "time_to_expiry", None),
-            gt=0.0,
-        )
+        _validate_numeric(f"{prefix}.time_to_expiry", getattr(contract, "time_to_expiry", None), gt=0.0)
 
         quantity = getattr(contract, "quantity", None)
         if quantity is None:
             raise _err(f"{prefix}.quantity is required")
         try:
             q_int = int(quantity)
-        except (TypeError, ValueError) as exc:  # pragma: no cover - defensive guard
+        except (TypeError, ValueError) as exc:  # pragma: no cover
             raise _err(f"{prefix}.quantity must be an integer ≥ 1") from exc
         if q_int < 1:
             raise _err(f"{prefix}.quantity must be ≥ 1")
 
-
 # ------------------------
-# Endpoints
+# Endpoint
 # ------------------------
 @router.post(
     "/aggregate-greeks",
@@ -95,15 +92,15 @@ def _validate_request_common(req: PricingRequest) -> None:
 )
 async def aggregate_greeks(request: PricingRequest) -> PortfolioGreeksResponse:
     """Aggregate portfolio Greeks for the provided pricing request."""
-
     _validate_request_common(request)
 
-    contracts = [to_option_contract(contract) for contract in request.contracts]
+    contracts = [to_option_contract(c) for c in request.contracts]
     market_data = to_market_data(request)
     override_volatility = request.market_data.volatility
 
     engine = get_engine()
 
+    # Price portfolio in a worker thread
     try:
         raw_results = await asyncio.to_thread(
             engine.price_portfolio,
@@ -121,12 +118,24 @@ async def aggregate_greeks(request: PricingRequest) -> PortfolioGreeksResponse:
             detail="Pricing engine unavailable",
         ) from exc
 
+    # Attach quantities, compute position-level metrics
     try:
         enriched_results = annotate_results_with_quantity(
-            raw_results, (contract.quantity for contract in request.contracts)
+            raw_results, (c.quantity for c in request.contracts)
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-    totals = engine.calculate_portfolio_greeks(enriched_results)
+    # Aggregate portfolio Greeks (guarded)
+    try:
+        totals = engine.calculate_portfolio_greeks(enriched_results)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        LOGGER.exception("Risk aggregation failed", exc_info=exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Risk aggregation unavailable",
+        ) from exc
+
     return PortfolioGreeksResponse(**totals)
