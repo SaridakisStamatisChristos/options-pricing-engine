@@ -39,7 +39,7 @@ class OptionContractRequest(BaseModel):
 
 class MarketDataRequest(BaseModel):
     spot_price: float = Field(..., gt=0, le=1e9)
-    risk_free_rate: float = Field(..., ge=0, le=1.0)
+    risk_free_rate: float = Field(..., ge=-1.0, le=1.0)
     dividend_yield: float = Field(0.0, ge=0, le=1.0)
     volatility: Optional[float] = Field(None, gt=0, le=5.0)
 

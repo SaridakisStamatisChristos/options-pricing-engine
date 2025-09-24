@@ -214,11 +214,6 @@ class MonteCarloModel:
             validate_pricing_parameters(contract, market_data, volatility)
 
             simulation_paths = max(1, self.paths)
-            draw_count = simulation_paths // 2 if self.antithetic else simulation_paths
-            draws = np.random.standard_normal(draw_count).astype(float)
-            if self.antithetic:
-                draws = np.concatenate([draws, -draws])
-
             drift = (
                 market_data.risk_free_rate - market_data.dividend_yield - 0.5 * volatility**2
             ) * contract.time_to_expiry
