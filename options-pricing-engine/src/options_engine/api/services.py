@@ -7,7 +7,6 @@ from typing import Dict, Iterable, Tuple
 
 def enrich_pricing_result(result: Dict[str, object], quantity: int) -> Dict[str, object]:
     """Augment a pricing result with position-level analytics."""
-
     enriched: Dict[str, object] = dict(result)
     qty = float(quantity)
     enriched["quantity"] = qty
@@ -40,12 +39,9 @@ def annotate_results_with_quantity(
 ) -> Tuple[Dict[str, object], ...]:
     """Return immutable enriched pricing results zipped with quantities.
 
-    The helper defensively copies both iterables so that generators are
-    consumed exactly once and to ensure the contract length matches the
-    number of pricing payloads.  Silent truncation can otherwise hide data
-    issues when upstream services fail to return every position's result.
+    Defensively copies both iterables so generators are consumed once and
+    verifies lengths match to avoid silent truncation.
     """
-
     result_items = tuple(results)
     quantity_items = tuple(quantities)
 
@@ -59,3 +55,4 @@ def annotate_results_with_quantity(
         for result, quantity in zip(result_items, quantity_items)
     ]
     return tuple(enriched_results)
+

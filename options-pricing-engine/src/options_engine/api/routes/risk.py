@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from ..dependencies import get_engine
@@ -21,7 +20,6 @@ router = APIRouter(
 @router.post("/greeks", response_model=PortfolioGreeksResponse)
 async def aggregate_greeks(request: PricingRequest) -> PortfolioGreeksResponse:
     """Aggregate position-level Greeks for the requested contracts."""
-
     if not request.contracts:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No contracts provided")
 
@@ -36,6 +34,7 @@ async def aggregate_greeks(request: PricingRequest) -> PortfolioGreeksResponse:
         model_name=request.model.value,
         override_volatility=request.market_data.volatility,
     )
+
     enriched_results = annotate_results_with_quantity(
         raw_results, (contract.quantity for contract in request.contracts)
     )
