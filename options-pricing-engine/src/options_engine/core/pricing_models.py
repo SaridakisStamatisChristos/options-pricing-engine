@@ -24,7 +24,6 @@ def _black_scholes_payoff(
     strike: float,
 ) -> float:
     """Return the intrinsic value of an option contract."""
-
     intrinsic = max(0.0, spot - strike)
     if contract.option_type is OptionType.PUT:
         intrinsic = max(0.0, strike - spot)
@@ -37,7 +36,6 @@ def _black_scholes_greeks(
     volatility: float,
 ) -> Tuple[float, float, float, float, float, float]:
     """Calculate the Black-Scholes price and greeks."""
-
     spot = market_data.spot_price
     strike = contract.strike_price
     time_to_expiry = contract.time_to_expiry
@@ -115,7 +113,7 @@ class BlackScholesModel:
                 computation_time_ms=elapsed_ms,
                 model_used="black_scholes",
             )
-        except Exception as exc:  # pragma: no cover - defensive programming
+        except Exception as exc:  # pragma: no cover
             LOGGER.exception("Black-Scholes pricing failed")
             elapsed_ms = (time.perf_counter() - start) * 1000.0
             return PricingResult(
@@ -185,7 +183,7 @@ class BinomialModel:
                 model_used=f"binomial_{steps}",
                 implied_volatility=volatility,
             )
-        except Exception as exc:  # pragma: no cover - defensive programming
+        except Exception as exc:  # pragma: no cover
             LOGGER.exception("Binomial pricing failed")
             elapsed_ms = (time.perf_counter() - start) * 1000.0
             return PricingResult(
@@ -201,9 +199,7 @@ _THREAD_LOCAL_RNG = threading.local()
 
 
 def _thread_local_generator() -> np.random.Generator:
-    generator: Optional[np.random.Generator] = getattr(
-        _THREAD_LOCAL_RNG, "generator", None
-    )
+    generator: Optional[np.random.Generator] = getattr(_THREAD_LOCAL_RNG, "generator", None)
     if generator is None:
         generator = np.random.default_rng()
         _THREAD_LOCAL_RNG.generator = generator
@@ -227,10 +223,13 @@ class MonteCarloModel:
         try:
             validate_pricing_parameters(contract, market_data, volatility)
 
+            # Ensure positive, integer number of simulation paths
             simulation_paths = int(max(1, self.paths))
+
             rng = _thread_local_generator()
 
             if self.antithetic:
+                # Make path count even and at least 2 so pairs exist
                 simulation_paths = max(2, simulation_paths + simulation_paths % 2)
                 half_paths = simulation_paths // 2
                 base_draws = rng.standard_normal(half_paths)
@@ -240,7 +239,8 @@ class MonteCarloModel:
             else:
                 draws = rng.standard_normal(simulation_paths)
 
-            time_sqrt = math.sqrt(contract.time_to_expiry)
+            time_sqrt = math.sqrt(max(0.0, contract.time_to_expiry))
+
             drift = (
                 market_data.risk_free_rate - market_data.dividend_yield - 0.5 * volatility**2
             ) * contract.time_to_expiry
@@ -256,12 +256,12 @@ class MonteCarloModel:
             discounted_payoffs = discount_factor * payoff
             theoretical_price = float(np.mean(discounted_payoffs))
 
-            standard_error = None
+            standard_error: Optional[float] = None
             confidence_interval: Optional[Tuple[float, float]] = None
             if simulation_paths > 1:
                 sample_std = float(np.std(discounted_payoffs, ddof=1))
                 standard_error = sample_std / math.sqrt(simulation_paths)
-                z_score = norm.ppf(0.975)
+                z_score = norm.ppf(0.975)  # 95% CI
                 half_width = z_score * standard_error
                 confidence_interval = (
                     theoretical_price - half_width,
@@ -278,7 +278,7 @@ class MonteCarloModel:
                 standard_error=standard_error,
                 confidence_interval=confidence_interval,
             )
-        except Exception as exc:  # pragma: no cover - defensive programming
+        except Exception as exc:  # pragma: no cover
             LOGGER.exception("Monte Carlo pricing failed")
             elapsed_ms = (time.perf_counter() - start) * 1000.0
             return PricingResult(
