@@ -1,7 +1,8 @@
 """Pydantic request schemas exposed by the public API."""
 
+from __future__ import annotations
+
 from enum import Enum
-import re
 from typing import List, Optional
 
 from pydantic import BaseModel, Field, field_validator
