@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 import time
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 from scipy.stats import norm
@@ -196,6 +197,19 @@ class BinomialModel:
             )
 
 
+_THREAD_LOCAL_RNG = threading.local()
+
+
+def _thread_local_generator() -> np.random.Generator:
+    generator: Optional[np.random.Generator] = getattr(
+        _THREAD_LOCAL_RNG, "generator", None
+    )
+    if generator is None:
+        generator = np.random.default_rng()
+        _THREAD_LOCAL_RNG.generator = generator
+    return generator
+
+
 @dataclass(slots=True)
 class MonteCarloModel:
     """Monte Carlo pricer supporting antithetic variates."""
@@ -213,11 +227,24 @@ class MonteCarloModel:
         try:
             validate_pricing_parameters(contract, market_data, volatility)
 
-            simulation_paths = max(1, self.paths)
+            simulation_paths = int(max(1, self.paths))
+            rng = _thread_local_generator()
+
+            if self.antithetic:
+                simulation_paths = max(2, simulation_paths + simulation_paths % 2)
+                half_paths = simulation_paths // 2
+                base_draws = rng.standard_normal(half_paths)
+                draws = np.empty(simulation_paths, dtype=float)
+                draws[:half_paths] = base_draws
+                draws[half_paths:] = -base_draws
+            else:
+                draws = rng.standard_normal(simulation_paths)
+
+            time_sqrt = math.sqrt(contract.time_to_expiry)
             drift = (
                 market_data.risk_free_rate - market_data.dividend_yield - 0.5 * volatility**2
             ) * contract.time_to_expiry
-            diffusion = volatility * math.sqrt(contract.time_to_expiry) * draws
+            diffusion = volatility * time_sqrt * draws
             terminal_prices = market_data.spot_price * np.exp(drift + diffusion)
 
             if contract.option_type is OptionType.CALL:
@@ -225,16 +252,31 @@ class MonteCarloModel:
             else:
                 payoff = np.maximum(contract.strike_price - terminal_prices, 0.0)
 
-            discounted_payoff = math.exp(
-                -market_data.risk_free_rate * contract.time_to_expiry
-            ) * float(np.mean(payoff))
+            discount_factor = math.exp(-market_data.risk_free_rate * contract.time_to_expiry)
+            discounted_payoffs = discount_factor * payoff
+            theoretical_price = float(np.mean(discounted_payoffs))
+
+            standard_error = None
+            confidence_interval: Optional[Tuple[float, float]] = None
+            if simulation_paths > 1:
+                sample_std = float(np.std(discounted_payoffs, ddof=1))
+                standard_error = sample_std / math.sqrt(simulation_paths)
+                z_score = norm.ppf(0.975)
+                half_width = z_score * standard_error
+                confidence_interval = (
+                    theoretical_price - half_width,
+                    theoretical_price + half_width,
+                )
+
             elapsed_ms = (time.perf_counter() - start) * 1000.0
             return PricingResult(
                 contract_id=contract.contract_id,
-                theoretical_price=max(0.0, discounted_payoff),
+                theoretical_price=max(0.0, theoretical_price),
                 computation_time_ms=elapsed_ms,
                 model_used=f"monte_carlo_{simulation_paths}",
                 implied_volatility=volatility,
+                standard_error=standard_error,
+                confidence_interval=confidence_interval,
             )
         except Exception as exc:  # pragma: no cover - defensive programming
             LOGGER.exception("Monte Carlo pricing failed")
