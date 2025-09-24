@@ -1,7 +1,10 @@
-from pydantic import BaseModel, Field, field_validator
-from typing import List, Optional
+"""Pydantic request schemas exposed by the public API."""
+
 from enum import Enum
 import re
+from typing import List, Optional
+
+from pydantic import BaseModel, Field, field_validator
 
 
 class OptionType(str, Enum):
