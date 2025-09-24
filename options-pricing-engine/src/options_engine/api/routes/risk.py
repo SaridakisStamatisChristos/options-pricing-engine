@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from ..config import get_settings
 from ..dependencies import get_engine
 from ..mappers import to_market_data, to_option_contract
 from ..schemas.request import PricingRequest
@@ -18,9 +18,7 @@ from ..services import annotate_results_with_quantity
 
 LOGGER = logging.getLogger(__name__)
 router = APIRouter(prefix="/risk", tags=["risk"])
-
-# Optional: cap portfolio size to protect service (env overrides default 1000)
-_MAX_BATCH = int(os.getenv("OPE_MAX_RISK_CONTRACTS", "1000"))
+SETTINGS = get_settings()
 
 # ------------------------
 # Validation helpers
@@ -64,8 +62,11 @@ def _validate_request_common(req: PricingRequest) -> None:
 
     if not req.contracts:
         raise _err("No contracts provided")
-    if len(req.contracts) > _MAX_BATCH:
-        raise _err(f"Too many contracts; limit is { _MAX_BATCH }")
+    if len(req.contracts) > SETTINGS.max_risk_contracts:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Too many contracts; limit is {SETTINGS.max_risk_contracts}",
+        )
 
     for i, contract in enumerate(req.contracts):
         prefix = f"contracts[{i}]"
@@ -108,6 +109,7 @@ async def aggregate_greeks(request: PricingRequest) -> PortfolioGreeksResponse:
             market_data,
             model_name=request.model.value,
             override_volatility=override_volatility,
+            seed=request.seed,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

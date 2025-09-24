@@ -1,1 +1,54 @@
-groups: []
+groups:
+  - name: ope-api-slo
+    rules:
+      - record: ope_request_error_rate
+        expr: sum(rate(ope_request_errors_total[5m])) / sum(rate(ope_request_total[5m]))
+      - alert: OPEHighHttpErrorRate
+        expr: ope_request_error_rate > 0.02
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High HTTP error rate"
+          description: >-
+            Error rate has exceeded 2% over the last 10 minutes. Investigate upstream dependencies
+            and recent deploys.
+      - alert: OPEHighLatencyP95
+        expr: |
+          max by (route) (
+            histogram_quantile(
+              0.95,
+              sum(rate(ope_request_latency_seconds_bucket[5m])) by (route, le)
+            )
+          ) > 0.75
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "P95 latency regression"
+          description: >-
+            95th percentile request latency exceeded 750ms for at least 10 minutes.
+      - alert: OPEThreadPoolRejections
+        expr: increase(ope_threadpool_rejections_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Pricing engine rejecting work"
+          description: >-
+            The pricing thread pool has rejected requests in the last five minutes. Scale out or
+            investigate long-running pricing jobs.
+  - name: ope-engine-health
+    rules:
+      - record: ope_threadpool_queue_backlog
+        expr: clamp_min(ope_threadpool_queue_depth, 0)
+      - alert: OPEPersistentQueueBacklog
+        expr: max_over_time(ope_threadpool_queue_depth[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pricing queue backed up"
+          description: >-
+            Tasks have been queued for more than 10 minutes. Investigate slow pricing models or
+            insufficient worker capacity.
