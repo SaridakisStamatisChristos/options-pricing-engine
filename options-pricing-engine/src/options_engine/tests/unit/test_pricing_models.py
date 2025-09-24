@@ -28,3 +28,8 @@ def test_monte_carlo_handles_small_antithetic_path_counts():
 
     assert not captured
     assert math.isfinite(result.theoretical_price)
+    assert result.standard_error is not None
+    assert result.standard_error >= 0.0
+    assert result.confidence_interval is not None
+    lower, upper = result.confidence_interval
+    assert lower <= upper
