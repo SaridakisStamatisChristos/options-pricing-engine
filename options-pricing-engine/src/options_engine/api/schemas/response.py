@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from pydantic import BaseModel
 
@@ -21,6 +21,17 @@ class PricingResultResponse(BaseModel):
     volatility_used: Optional[float] = None
     cached: Optional[bool] = None
     error: Optional[str] = None
+    standard_error: Optional[float] = None
+    confidence_interval: Optional[Tuple[float, float]] = None
+    quantity: Optional[float] = None
+    position_value: Optional[float] = None
+    position_delta: Optional[float] = None
+    position_gamma: Optional[float] = None
+    position_theta: Optional[float] = None
+    position_vega: Optional[float] = None
+    position_rho: Optional[float] = None
+    position_standard_error: Optional[float] = None
+    position_confidence_interval: Optional[Tuple[float, float]] = None
 
 
 class PortfolioGreeksResponse(BaseModel):
@@ -39,3 +50,19 @@ class PricingBatchResponse(BaseModel):
     total_computation_time_ms: float
     options_per_second: float
     portfolio_greeks: Optional[PortfolioGreeksResponse] = None
+
+
+class VolatilityPointResponse(BaseModel):
+    strike: float
+    maturity: float
+    volatility: float
+    timestamp: float
+    source: str
+
+
+class VolatilitySurfaceResponse(BaseModel):
+    points: List[VolatilityPointResponse]
+
+
+class VolatilityEstimateResponse(BaseModel):
+    volatility: float

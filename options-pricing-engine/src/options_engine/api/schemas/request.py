@@ -1,7 +1,12 @@
-from pydantic import BaseModel, Field, field_validator
-from typing import List, Optional
-from enum import Enum
+"""Pydantic request schemas exposed by the public API."""
+
+from __future__ import annotations
+
 import re
+from enum import Enum
+from typing import List, Optional
+
+from pydantic import BaseModel, Field, field_validator
 
 
 class OptionType(str, Enum):
@@ -49,3 +54,16 @@ class PricingRequest(BaseModel):
     market_data: MarketDataRequest
     model: PricingModel = PricingModel.BLACK_SCHOLES
     calculate_greeks: bool = True
+
+
+class VolatilityPointRequest(BaseModel):
+    strike: float = Field(..., gt=0, le=1e9)
+    maturity: float = Field(..., gt=0, le=50.0)
+    volatility: float = Field(..., gt=0, le=5.0)
+    source: str = Field("market", min_length=1, max_length=32)
+
+
+class VolatilityEstimateRequest(BaseModel):
+    strike: float = Field(..., gt=0, le=1e9)
+    maturity: float = Field(..., gt=0, le=50.0)
+    spot: float = Field(..., gt=0, le=1e9)
