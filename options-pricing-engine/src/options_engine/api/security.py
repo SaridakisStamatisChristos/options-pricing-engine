@@ -23,7 +23,13 @@ _USER_STORE: Dict[str, Dict[str, object]] = {
     "quant_trader": {
         "username": "quant_trader",
         "hashed_password": "$2b$12$fq8u5uTv8/bZLa4sWHofLeKPZnQgdNRu6mEL2BzfC/8xINwmt6wb6",
-        "permissions": ["pricing:read", "pricing:write", "risk:read"],
+        "permissions": [
+            "pricing:read",
+            "pricing:write",
+            "risk:read",
+            "market-data:read",
+            "market-data:write",
+        ],
     }
 }
 
