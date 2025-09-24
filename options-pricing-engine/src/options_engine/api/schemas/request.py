@@ -54,6 +54,7 @@ class PricingRequest(BaseModel):
     market_data: MarketDataRequest
     model: PricingModel = PricingModel.BLACK_SCHOLES
     calculate_greeks: bool = True
+    seed: Optional[int] = Field(default=None, ge=0, le=2**63 - 1)
 
 
 class VolatilityPointRequest(BaseModel):

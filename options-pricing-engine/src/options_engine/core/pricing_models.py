@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import numpy as np
+from numpy.random import Generator, SeedSequence
 from scipy.stats import norm
 
 from .models import ExerciseStyle, MarketData, OptionContract, OptionType, PricingResult
@@ -198,12 +199,15 @@ class BinomialModel:
 _THREAD_LOCAL_RNG = threading.local()
 
 
-def _thread_local_generator() -> np.random.Generator:
+def _thread_local_generator(seed_sequence: Optional[SeedSequence] = None) -> Generator:
     """Return a thread-local numpy Generator, creating one if needed."""
-    generator = getattr(_THREAD_LOCAL_RNG, "generator", None)
-    if generator is None:
-        generator = np.random.default_rng()
+
+    generator: Optional[Generator] = getattr(_THREAD_LOCAL_RNG, "generator", None)
+    current_seed = getattr(_THREAD_LOCAL_RNG, "seed_sequence", None)
+    if generator is None or current_seed is not seed_sequence:
+        generator = np.random.default_rng(seed_sequence)
         _THREAD_LOCAL_RNG.generator = generator
+        _THREAD_LOCAL_RNG.seed_sequence = seed_sequence
     return generator
 
 
@@ -214,11 +218,16 @@ class MonteCarloModel:
     paths: int = 20_000
     antithetic: bool = True
 
+    # Optional deterministic seed shared across threads
+    seed_sequence: Optional[SeedSequence] = None
+
     def calculate_price(
         self,
         contract: OptionContract,
         market_data: MarketData,
         volatility: float,
+        *,
+        seed_sequence: Optional[SeedSequence] = None,
     ) -> PricingResult:
         start = time.perf_counter()
         try:
@@ -227,7 +236,8 @@ class MonteCarloModel:
             # Ensure positive, integer number of simulation paths
             simulation_paths = int(max(1, self.paths))
 
-            rng = _thread_local_generator()
+            sequence = seed_sequence or self.seed_sequence
+            rng = _thread_local_generator(sequence)
 
             if self.antithetic:
                 # Make path count even and at least 2 so pairs exist

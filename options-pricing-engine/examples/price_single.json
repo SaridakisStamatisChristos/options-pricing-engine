@@ -1,0 +1,20 @@
+{
+  "contracts": [
+    {
+      "symbol": "ABC",
+      "strike_price": 100,
+      "time_to_expiry": 0.5,
+      "option_type": "call",
+      "exercise_style": "european",
+      "quantity": 10
+    }
+  ],
+  "market_data": {
+    "spot_price": 102,
+    "risk_free_rate": 0.01,
+    "dividend_yield": 0.0,
+    "volatility": 0.2
+  },
+  "model": "black_scholes",
+  "calculate_greeks": true
+}

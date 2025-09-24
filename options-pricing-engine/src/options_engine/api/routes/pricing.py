@@ -8,6 +8,7 @@ import time
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 
+from ..config import get_settings
 from ..dependencies import get_engine
 from ..mappers import to_market_data, to_option_contract
 from ..schemas.request import PricingRequest
@@ -17,6 +18,7 @@ from ..services import annotate_results_with_quantity, enrich_pricing_result
 
 LOGGER = logging.getLogger(__name__)
 router = APIRouter(prefix="/pricing", tags=["pricing"])
+SETTINGS = get_settings()
 engine = get_engine()
 
 
@@ -43,6 +45,11 @@ async def single(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Single pricing endpoint expects exactly one contract",
         )
+    if len(request.contracts) > SETTINGS.max_pricing_contracts:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Too many contracts; limit is {SETTINGS.max_pricing_contracts}",
+        )
 
     domain_contract = to_option_contract(request.contracts[0])
     market_data = to_market_data(request)
@@ -56,6 +63,7 @@ async def single(
             market_data,
             model_name=request.model.value,
             override_volatility=override_volatility,
+            seed=request.seed,
         )
     except ValueError as exc:
         # bad inputs, unsupported model, etc.
@@ -95,6 +103,11 @@ async def single(
 async def batch(request: PricingRequest, background_tasks: BackgroundTasks) -> PricingBatchResponse:
     if not request.contracts:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No contracts provided")
+    if len(request.contracts) > SETTINGS.max_pricing_contracts:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Too many contracts; limit is {SETTINGS.max_pricing_contracts}",
+        )
 
     contracts = [to_option_contract(contract) for contract in request.contracts]
     market_data = to_market_data(request)
@@ -108,6 +121,7 @@ async def batch(request: PricingRequest, background_tasks: BackgroundTasks) -> P
             market_data,
             model_name=request.model.value,
             override_volatility=override_volatility,
+            seed=request.seed,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
