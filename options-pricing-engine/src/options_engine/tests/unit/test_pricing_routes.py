@@ -20,7 +20,6 @@ from options_engine.api.schemas.request import (
 
 def test_single_route_respects_calculate_greeks_flag() -> None:
     """The single pricing endpoint should omit Greeks when not requested."""
-
     request = PricingRequest(
         contracts=[
             OptionContractRequest(

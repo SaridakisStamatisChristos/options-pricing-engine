@@ -58,13 +58,16 @@ async def single(
             override_volatility=override_volatility,
         )
     except ValueError as exc:
+        # bad inputs, unsupported model, etc.
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except RuntimeError as exc:
+        # engine unavailable or internal transient failure
         LOGGER.exception("Pricing engine unavailable", exc_info=exc)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Pricing engine unavailable",
         ) from exc
+
     enriched_result = enrich_pricing_result(result, request.contracts[0].quantity)
     duration_ms = (time.perf_counter() - start) * 1000.0
 
@@ -114,12 +117,14 @@ async def batch(request: PricingRequest, background_tasks: BackgroundTasks) -> P
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Pricing engine unavailable",
         ) from exc
+
     try:
         enriched_results = annotate_results_with_quantity(
             raw_results, (contract.quantity for contract in request.contracts)
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
     duration_ms = (time.perf_counter() - start) * 1000.0
     options_per_second = (
         len(enriched_results) / (duration_ms / 1000.0) if duration_ms > 0 else float("inf")
