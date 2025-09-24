@@ -113,7 +113,7 @@ class BlackScholesModel:
                 computation_time_ms=elapsed_ms,
                 model_used="black_scholes",
             )
-        except Exception as exc:  # pragma: no cover - defensive programming
+        except Exception as exc:  # pragma: no cover
             LOGGER.exception("Black-Scholes pricing failed")
             elapsed_ms = (time.perf_counter() - start) * 1000.0
             return PricingResult(
@@ -183,7 +183,7 @@ class BinomialModel:
                 model_used=f"binomial_{steps}",
                 implied_volatility=volatility,
             )
-        except Exception as exc:  # pragma: no cover - defensive programming
+        except Exception as exc:  # pragma: no cover
             LOGGER.exception("Binomial pricing failed")
             elapsed_ms = (time.perf_counter() - start) * 1000.0
             return PricingResult(
@@ -199,9 +199,7 @@ _THREAD_LOCAL_RNG = threading.local()
 
 
 def _thread_local_generator() -> np.random.Generator:
-    generator: Optional[np.random.Generator] = getattr(
-        _THREAD_LOCAL_RNG, "generator", None
-    )
+    generator: Optional[np.random.Generator] = getattr(_THREAD_LOCAL_RNG, "generator", None)
     if generator is None:
         generator = np.random.default_rng()
         _THREAD_LOCAL_RNG.generator = generator
@@ -280,7 +278,7 @@ class MonteCarloModel:
                 standard_error=standard_error,
                 confidence_interval=confidence_interval,
             )
-        except Exception as exc:  # pragma: no cover - defensive programming
+        except Exception as exc:  # pragma: no cover
             LOGGER.exception("Monte Carlo pricing failed")
             elapsed_ms = (time.perf_counter() - start) * 1000.0
             return PricingResult(

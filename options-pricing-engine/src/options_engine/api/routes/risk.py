@@ -27,6 +27,7 @@ async def aggregate_greeks(request: PricingRequest) -> PortfolioGreeksResponse:
     contracts = [to_option_contract(contract) for contract in request.contracts]
     market_data = to_market_data(request)
 
+    # Run CPU-bound pricing off the event loop so the API stays responsive
     raw_results = await asyncio.to_thread(
         engine.price_portfolio,
         contracts,

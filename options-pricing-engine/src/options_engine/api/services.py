@@ -55,4 +55,3 @@ def annotate_results_with_quantity(
         for result, quantity in zip(result_items, quantity_items)
     ]
     return tuple(enriched_results)
-

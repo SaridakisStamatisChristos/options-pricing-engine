@@ -57,11 +57,16 @@ async def single(
     background_tasks.add_task(_log_single_pricing, enriched_result["contract_id"])
 
     options_per_second = 1000.0 / duration_ms if duration_ms > 0 else float("inf")
+    portfolio_greeks = (
+        engine.calculate_portfolio_greeks([enriched_result])
+        if request.calculate_greeks
+        else None
+    )
     return PricingBatchResponse(
         results=[enriched_result],
         total_computation_time_ms=duration_ms,
         options_per_second=options_per_second,
-        portfolio_greeks=engine.calculate_portfolio_greeks([enriched_result]),
+        portfolio_greeks=portfolio_greeks,
     )
 
 
