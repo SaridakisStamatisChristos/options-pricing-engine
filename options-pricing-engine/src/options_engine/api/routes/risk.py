@@ -1,24 +1,22 @@
-"""Pricing endpoints."""
+"""Risk analytics endpoints."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from ..dependencies import get_engine
 from ..mappers import to_market_data, to_option_contract
 from ..schemas.request import PricingRequest
-from ..schemas.response import PricingBatchResponse
+from ..schemas.response import PortfolioGreeksResponse
 from ..security import require_permission
-from ..services import annotate_results_with_quantity, enrich_pricing_result
+from ..services import annotate_results_with_quantity
 
 LOGGER = logging.getLogger(__name__)
-router = APIRouter(prefix="/pricing", tags=["pricing"])
-engine = get_engine()
+router = APIRouter(prefix="/risk", tags=["risk"])
 
 
 # ------------------------
@@ -41,8 +39,8 @@ def _validate_numeric(
         raise _err(f"Missing required field: {name}")
     try:
         x = float(value)
-    except (TypeError, ValueError):
-        raise _err(f"{name} must be a number")
+    except (TypeError, ValueError) as exc:  # pragma: no cover - defensive guard
+        raise _err(f"{name} must be a number") from exc
     if gt is not None and not (x > gt):
         raise _err(f"{name} must be > {gt}")
     if ge is not None and not (x >= ge):
@@ -59,119 +57,53 @@ def _validate_request_common(req: PricingRequest) -> None:
     if md is None:
         raise _err("Missing market_data")
 
-    # Conservative ranges; adjust if your domain allows wider inputs
     _validate_numeric("market_data.spot_price", getattr(md, "spot_price", None), gt=0.0)
     vol = getattr(md, "volatility", None)
     if vol is not None:
-        # Allow 0 ≤ vol ≤ 5.0 (i.e., 0%–500% annualized) — wide but finite
         _validate_numeric("market_data.volatility", vol, ge=0.0, le=5.0)
 
-    # Contracts list present?
     if not req.contracts:
         raise _err("No contracts provided")
 
-    # Per-contract checks
-    for i, c in enumerate(req.contracts):
+    for i, contract in enumerate(req.contracts):
         prefix = f"contracts[{i}]"
-        _validate_numeric(f"{prefix}.strike", getattr(c, "strike", None), gt=0.0)
+        _validate_numeric(f"{prefix}.strike_price", getattr(contract, "strike_price", None), gt=0.0)
+        _validate_numeric(
+            f"{prefix}.time_to_expiry",
+            getattr(contract, "time_to_expiry", None),
+            gt=0.0,
+        )
 
-        qty = getattr(c, "quantity", None)
-        if qty is None:
+        quantity = getattr(contract, "quantity", None)
+        if quantity is None:
             raise _err(f"{prefix}.quantity is required")
-        # Ensure integer-ish and ≥1
         try:
-            q = int(qty)
-        except (TypeError, ValueError):
-            raise _err(f"{prefix}.quantity must be an integer ≥ 1")
-        if q < 1:
+            q_int = int(quantity)
+        except (TypeError, ValueError) as exc:  # pragma: no cover - defensive guard
+            raise _err(f"{prefix}.quantity must be an integer ≥ 1") from exc
+        if q_int < 1:
             raise _err(f"{prefix}.quantity must be ≥ 1")
-
-
-# ------------------------
-# Logging helpers
-# ------------------------
-def _log_single_pricing(contract_id: str) -> None:
-    LOGGER.info("Priced %s", contract_id)
-
-
-def _log_batch_pricing(count: int) -> None:
-    LOGGER.info("Priced %d contracts", count)
 
 
 # ------------------------
 # Endpoints
 # ------------------------
 @router.post(
-    "/single",
-    response_model=PricingBatchResponse,
-    dependencies=[Depends(require_permission("pricing:read"))],
+    "/aggregate-greeks",
+    response_model=PortfolioGreeksResponse,
+    dependencies=[Depends(require_permission("risk:read"))],
 )
-async def single(
-    request: PricingRequest, background_tasks: BackgroundTasks
-) -> PricingBatchResponse:
-    _validate_request_common(request)
-    if len(request.contracts) != 1:
-        raise _err("Single pricing endpoint expects exactly one contract")
+async def aggregate_greeks(request: PricingRequest) -> PortfolioGreeksResponse:
+    """Aggregate portfolio Greeks for the provided pricing request."""
 
-    domain_contract = to_option_contract(request.contracts[0])
-    market_data = to_market_data(request)
-    override_volatility = request.market_data.volatility
-
-    start = time.perf_counter()
-    try:
-        result = await asyncio.to_thread(
-            engine.price_option,
-            domain_contract,
-            market_data,
-            model_name=request.model.value,
-            override_volatility=override_volatility,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        LOGGER.exception("Pricing engine unavailable", exc_info=exc)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Pricing engine unavailable",
-        ) from exc
-
-    enriched_result = enrich_pricing_result(result, request.contracts[0].quantity)
-    duration_ms = (time.perf_counter() - start) * 1000.0
-    background_tasks.add_task(_log_single_pricing, enriched_result["contract_id"])
-
-    options_per_second = 1000.0 / duration_ms if duration_ms > 0 else float("inf")
-    try:
-        portfolio_greeks = (
-            engine.calculate_portfolio_greeks([enriched_result])
-            if request.calculate_greeks
-            else None
-        )
-    except Exception as exc:
-        LOGGER.exception("Portfolio greeks calculation failed", exc_info=exc)
-        # Non-fatal: proceed without portfolio greeks
-        portfolio_greeks = None
-
-    return PricingBatchResponse(
-        results=[enriched_result],
-        total_computation_time_ms=duration_ms,
-        options_per_second=options_per_second,
-        portfolio_greeks=portfolio_greeks,
-    )
-
-
-@router.post(
-    "/batch",
-    response_model=PricingBatchResponse,
-    dependencies=[Depends(require_permission("pricing:read"))],
-)
-async def batch(request: PricingRequest, background_tasks: BackgroundTasks) -> PricingBatchResponse:
     _validate_request_common(request)
 
     contracts = [to_option_contract(contract) for contract in request.contracts]
     market_data = to_market_data(request)
     override_volatility = request.market_data.volatility
 
-    start = time.perf_counter()
+    engine = get_engine()
+
     try:
         raw_results = await asyncio.to_thread(
             engine.price_portfolio,
@@ -196,24 +128,5 @@ async def batch(request: PricingRequest, background_tasks: BackgroundTasks) -> P
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-    duration_ms = (time.perf_counter() - start) * 1000.0
-    options_per_second = (
-        len(enriched_results) / (duration_ms / 1000.0) if duration_ms > 0 else float("inf")
-    )
-
-    try:
-        portfolio_greeks = (
-            engine.calculate_portfolio_greeks(enriched_results) if request.calculate_greeks else None
-        )
-    except Exception as exc:
-        LOGGER.exception("Portfolio greeks calculation failed", exc_info=exc)
-        portfolio_greeks = None
-
-    background_tasks.add_task(_log_batch_pricing, len(enriched_results))
-
-    return PricingBatchResponse(
-        results=list(enriched_results),
-        total_computation_time_ms=duration_ms,
-        options_per_second=options_per_second,
-        portfolio_greeks=portfolio_greeks,
-    )
+    totals = engine.calculate_portfolio_greeks(enriched_results)
+    return PortfolioGreeksResponse(**totals)
