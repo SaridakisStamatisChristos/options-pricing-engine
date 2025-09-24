@@ -1,34 +1,86 @@
-from datetime import datetime, timedelta
-from typing import Optional, Dict, List, Callable
+"""Authentication and authorization helpers."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import Callable, Dict, List, Optional
+
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from fastapi import HTTPException, status, Depends
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-import os
-SECRET_KEY=os.getenv("OPE_JWT_SECRET","change-me")
-ALGORITHM="HS256"; ACCESS_TOKEN_EXPIRE_MINUTES=30
-pwd_context=CryptContext(schemes=["bcrypt"], deprecated="auto")
-security=HTTPBearer()
-_users={"quant_trader":{"username":"quant_trader","hashed_password":pwd_context.hash("trader123"),"permissions":["pricing:read","pricing:write","risk:read"]}}
+
+SECRET_KEY = os.getenv("OPE_JWT_SECRET", "change-me")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+security = HTTPBearer()
+
+_USER_STORE: Dict[str, Dict[str, object]] = {
+    "quant_trader": {
+        "username": "quant_trader",
+        "hashed_password": "$2b$12$fq8u5uTv8/bZLa4sWHofLeKPZnQgdNRu6mEL2BzfC/8xINwmt6wb6",
+        "permissions": ["pricing:read", "pricing:write", "risk:read"],
+    }
+}
+
+
+@dataclass(slots=True)
 class User:
-    def __init__(self,username:str,permissions:List[str]): self.username=username; self.permissions=permissions
-def authenticate_user(u:str,p:str)->Optional[Dict]:
-    d=_users.get(u); 
-    if not d or not pwd_context.verify(p,d["hashed_password"]): return None
-    return d
-def create_access_token(data:dict,expires_delta:Optional[timedelta]=None)->str:
-    to_encode={**data}; exp=datetime.utcnow()+(expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)); to_encode.update({"exp":exp}); return jwt.encode(to_encode,SECRET_KEY,algorithm=ALGORITHM)
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security))->User:
-    exc=HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials", headers={"WWW-Authenticate":"Bearer"})
+    username: str
+    permissions: List[str]
+
+
+def authenticate_user(username: str, password: str) -> Optional[Dict[str, object]]:
+    record = _USER_STORE.get(username)
+    if not record:
+        return None
+    if not pwd_context.verify(password, record["hashed_password"]):
+        return None
+    return record
+
+
+def create_access_token(data: Dict[str, object], expires_delta: Optional[timedelta] = None) -> str:
+    payload = dict(data)
+    expire_at = datetime.now(UTC) + (
+        expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+    payload.update({"exp": expire_at})
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> User:
+    unauthorized = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
     try:
-        payload=jwt.decode(credentials.credentials,SECRET_KEY,algorithms=[ALGORITHM]); sub=payload.get("sub")
-        if not sub: raise exc
-    except JWTError: raise exc
-    d=_users.get(sub); 
-    if not d: raise exc
-    return User(sub,d.get("permissions",[]))
-def require_permission(perm:str)->Callable[[User],User]:
-    def _dep(user:User=Depends(get_current_user))->User:
-        if perm not in user.permissions: raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Permission '{perm}' required")
+        payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+        subject = payload.get("sub")
+        if subject is None:
+            raise unauthorized
+    except JWTError as exc:  # pragma: no cover - defensive programming
+        raise unauthorized from exc
+
+    record = _USER_STORE.get(subject)
+    if not record:
+        raise unauthorized
+
+    return User(username=subject, permissions=list(record.get("permissions", [])))
+
+
+def require_permission(permission: str) -> Callable[[User], User]:
+    def dependency(user: User = Depends(get_current_user)) -> User:
+        if permission not in user.permissions:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Permission '{permission}' required",
+            )
         return user
-    return _dep
+
+    return dependency
