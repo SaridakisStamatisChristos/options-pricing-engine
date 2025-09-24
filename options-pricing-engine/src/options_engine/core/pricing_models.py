@@ -1,58 +1,253 @@
-import math, time, logging
+"""Pricing model implementations used by the engine."""
+
+from __future__ import annotations
+
+import logging
+import math
+import time
+from dataclasses import dataclass
+from typing import Tuple
+
 import numpy as np
 from scipy.stats import norm
-from .models import OptionContract, MarketData, PricingResult, OptionType
+
+from .models import ExerciseStyle, MarketData, OptionContract, OptionType, PricingResult
 from ..utils.validation import validate_pricing_parameters
-log=logging.getLogger(__name__)
-def _bs(S,K,T,r,sigma,q,is_call):
-    if T<=1e-12 or sigma<=1e-12:
-        intrinsic = max(0.0, S-K) if is_call else max(0.0, K-S)
-        return intrinsic,0,0,0,0,0
-    st=math.sqrt(T); d1=(math.log(S/K)+(r-q+0.5*sigma*sigma)*T)/(sigma*st); d2=d1-sigma*st
-    if is_call:
-        price=S*math.exp(-q*T)*norm.cdf(d1)-K*math.exp(-r*T)*norm.cdf(d2); delta=math.exp(-q*T)*norm.cdf(d1); rho=K*T*math.exp(-r*T)*norm.cdf(d2)/100.0
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _black_scholes_payoff(
+    contract: OptionContract,
+    spot: float,
+    strike: float,
+) -> float:
+    """Return the intrinsic value of an option contract."""
+
+    intrinsic = max(0.0, spot - strike)
+    if contract.option_type is OptionType.PUT:
+        intrinsic = max(0.0, strike - spot)
+    return intrinsic
+
+
+def _black_scholes_greeks(
+    contract: OptionContract,
+    market_data: MarketData,
+    volatility: float,
+) -> Tuple[float, float, float, float, float, float]:
+    """Calculate the Black-Scholes price and greeks."""
+
+    spot = market_data.spot_price
+    strike = contract.strike_price
+    time_to_expiry = contract.time_to_expiry
+    rate = market_data.risk_free_rate
+    dividend = market_data.dividend_yield
+
+    if time_to_expiry <= 1e-12 or volatility <= 1e-12:
+        intrinsic = _black_scholes_payoff(contract, spot, strike)
+        return intrinsic, 0.0, 0.0, 0.0, 0.0, 0.0
+
+    sqrt_t = math.sqrt(time_to_expiry)
+    numerator = math.log(spot / strike) + (rate - dividend + 0.5 * volatility**2) * time_to_expiry
+    denominator = volatility * sqrt_t
+    d1 = numerator / denominator
+    d2 = d1 - volatility * sqrt_t
+
+    pdf = norm.pdf(d1)
+
+    if contract.option_type is OptionType.CALL:
+        price = spot * math.exp(-dividend * time_to_expiry) * norm.cdf(d1) - strike * math.exp(
+            -rate * time_to_expiry
+        ) * norm.cdf(d2)
+        delta = math.exp(-dividend * time_to_expiry) * norm.cdf(d1)
+        rho = strike * time_to_expiry * math.exp(-rate * time_to_expiry) * norm.cdf(d2) / 100.0
+        theta = (
+            -spot * pdf * volatility * math.exp(-dividend * time_to_expiry) / (2.0 * sqrt_t)
+            - dividend * spot * math.exp(-dividend * time_to_expiry) * norm.cdf(d1)
+            + rate * strike * math.exp(-rate * time_to_expiry) * norm.cdf(d2)
+        ) / 365.0
     else:
-        price=K*math.exp(-r*T)*norm.cdf(-d2)-S*math.exp(-q*T)*norm.cdf(-d1); delta=-math.exp(-q*T)*norm.cdf(-d1); rho=-K*T*math.exp(-r*T)*norm.cdf(-d2)/100.0
-    pdf=norm.pdf(d1); gamma=math.exp(-q*T)*pdf/(S*sigma*st); vega=S*math.exp(-q*T)*pdf*st/100.0
-    theta=(-S*pdf*sigma*math.exp(-q*T)/(2*st) + (q*S*math.exp(-q*T)*(norm.cdf(d1) if is_call else -norm.cdf(-d1))) - (r*K*math.exp(-r*T)*(norm.cdf(d2) if is_call else -norm.cdf(-d2))))/365.0
-    return price,delta,gamma,theta,vega,rho
+        price = strike * math.exp(-rate * time_to_expiry) * norm.cdf(-d2) - spot * math.exp(
+            -dividend * time_to_expiry
+        ) * norm.cdf(-d1)
+        delta = -math.exp(-dividend * time_to_expiry) * norm.cdf(-d1)
+        rho = -strike * time_to_expiry * math.exp(-rate * time_to_expiry) * norm.cdf(-d2) / 100.0
+        theta = (
+            -spot * pdf * volatility * math.exp(-dividend * time_to_expiry) / (2.0 * sqrt_t)
+            + dividend * spot * math.exp(-dividend * time_to_expiry) * norm.cdf(-d1)
+            - rate * strike * math.exp(-rate * time_to_expiry) * norm.cdf(-d2)
+        ) / 365.0
+
+    gamma = math.exp(-dividend * time_to_expiry) * pdf / (spot * volatility * sqrt_t)
+    vega = spot * math.exp(-dividend * time_to_expiry) * pdf * sqrt_t / 100.0
+
+    return price, delta, gamma, theta, vega, rho
+
+
+@dataclass(slots=True)
 class BlackScholesModel:
-    def calculate_price(self,c:OptionContract,md:MarketData,vol:float)->PricingResult:
-        t0=time.perf_counter()
+    """Deterministic Black-Scholes pricing model."""
+
+    def calculate_price(
+        self,
+        contract: OptionContract,
+        market_data: MarketData,
+        volatility: float,
+    ) -> PricingResult:
+        start = time.perf_counter()
         try:
-            validate_pricing_parameters(c,md,vol)
-            price,delta,gamma,theta,vega,rho=_bs(md.spot_price,c.strike_price,c.time_to_expiry,md.risk_free_rate,vol,md.dividend_yield,c.option_type==OptionType.CALL)
-            return PricingResult(c.contract_id,max(0.0,price),delta,gamma,theta,vega,rho,vol,(time.perf_counter()-t0)*1000.0,"black_scholes")
-        except Exception as e:
-            log.exception("BS failed"); return PricingResult(c.contract_id,0.0,error=str(e),computation_time_ms=(time.perf_counter()-t0)*1000.0,model_used="black_scholes")
+            validate_pricing_parameters(contract, market_data, volatility)
+            price, delta, gamma, theta, vega, rho = _black_scholes_greeks(
+                contract, market_data, volatility
+            )
+            price = max(0.0, price)
+            elapsed_ms = (time.perf_counter() - start) * 1000.0
+            return PricingResult(
+                contract_id=contract.contract_id,
+                theoretical_price=price,
+                delta=delta,
+                gamma=gamma,
+                theta=theta,
+                vega=vega,
+                rho=rho,
+                implied_volatility=volatility,
+                computation_time_ms=elapsed_ms,
+                model_used="black_scholes",
+            )
+        except Exception as exc:  # pragma: no cover - defensive programming
+            LOGGER.exception("Black-Scholes pricing failed")
+            elapsed_ms = (time.perf_counter() - start) * 1000.0
+            return PricingResult(
+                contract_id=contract.contract_id,
+                theoretical_price=0.0,
+                computation_time_ms=elapsed_ms,
+                model_used="black_scholes",
+                error=str(exc),
+            )
+
+
+@dataclass(slots=True)
 class BinomialModel:
-    def __init__(self,steps:int=200): self.steps=steps
-    def calculate_price(self,c:OptionContract,md:MarketData,vol:float)->PricingResult:
-        t0=time.perf_counter()
+    """Recombining binomial tree pricing model."""
+
+    steps: int = 200
+
+    def calculate_price(
+        self,
+        contract: OptionContract,
+        market_data: MarketData,
+        volatility: float,
+    ) -> PricingResult:
+        start = time.perf_counter()
         try:
-            validate_pricing_parameters(c,md,vol); N=self.steps; dt=c.time_to_expiry/N
-            u=math.exp(vol*math.sqrt(dt)); d=1/u; p=(math.exp((md.risk_free_rate-md.dividend_yield)*dt)-d)/(u-d); p=min(1,max(0,p)); disc=math.exp(-md.risk_free_rate*dt)
-            prices=np.array([md.spot_price*(u**j)*(d**(N-j)) for j in range(N+1)])
-            vals=np.maximum(prices-c.strike_price,0.0) if c.option_type==OptionType.CALL else np.maximum(c.strike_price-prices,0.0)
-            for i in range(N-1,-1,-1):
-                vals=disc*(p*vals[1:]+(1-p)*vals[:-1])
-                prices=prices[:-1]/u
-                if c.exercise_style.name=="AMERICAN":
-                    ex=np.maximum(prices-c.strike_price,0.0) if c.option_type==OptionType.CALL else np.maximum(c.strike_price-prices,0.0)
-                    vals=np.maximum(vals,ex)
-            return PricingResult(c.contract_id,float(vals[0]),model_used=f"binomial_{self.steps}",computation_time_ms=(time.perf_counter()-t0)*1000.0)
-        except Exception as e:
-            log.exception("BIN failed"); return PricingResult(c.contract_id,0.0,error=str(e),computation_time_ms=(time.perf_counter()-t0)*1000.0,model_used=f"binomial_{self.steps}")
+            validate_pricing_parameters(contract, market_data, volatility)
+
+            steps = max(1, self.steps)
+            delta_t = contract.time_to_expiry / steps
+            up = math.exp(volatility * math.sqrt(delta_t))
+            down = 1.0 / up
+
+            growth = math.exp((market_data.risk_free_rate - market_data.dividend_yield) * delta_t)
+            probability = (growth - down) / (up - down)
+            probability = min(1.0, max(0.0, probability))
+            discount = math.exp(-market_data.risk_free_rate * delta_t)
+
+            prices = np.array(
+                [
+                    market_data.spot_price * (up**j) * (down ** (steps - j))
+                    for j in range(steps + 1)
+                ],
+                dtype=float,
+            )
+
+            if contract.option_type is OptionType.CALL:
+                values = np.maximum(prices - contract.strike_price, 0.0)
+            else:
+                values = np.maximum(contract.strike_price - prices, 0.0)
+
+            for index in range(steps - 1, -1, -1):
+                values = discount * (probability * values[1:] + (1.0 - probability) * values[:-1])
+                prices = prices[:-1] / up
+
+                if contract.exercise_style is ExerciseStyle.AMERICAN:
+                    if contract.option_type is OptionType.CALL:
+                        exercise_value = np.maximum(prices - contract.strike_price, 0.0)
+                    else:
+                        exercise_value = np.maximum(contract.strike_price - prices, 0.0)
+                    values = np.maximum(values, exercise_value)
+
+            elapsed_ms = (time.perf_counter() - start) * 1000.0
+            return PricingResult(
+                contract_id=contract.contract_id,
+                theoretical_price=float(values[0]),
+                computation_time_ms=elapsed_ms,
+                model_used=f"binomial_{steps}",
+                implied_volatility=volatility,
+            )
+        except Exception as exc:  # pragma: no cover - defensive programming
+            LOGGER.exception("Binomial pricing failed")
+            elapsed_ms = (time.perf_counter() - start) * 1000.0
+            return PricingResult(
+                contract_id=contract.contract_id,
+                theoretical_price=0.0,
+                computation_time_ms=elapsed_ms,
+                model_used=f"binomial_{self.steps}",
+                error=str(exc),
+            )
+
+
+@dataclass(slots=True)
 class MonteCarloModel:
-    def __init__(self,n:int=20000,antithetic:bool=True): self.n=n; self.antithetic=antithetic
-    def calculate_price(self,c:OptionContract,md:MarketData,vol:float)->PricingResult:
-        t0=time.perf_counter()
+    """Monte Carlo pricer supporting antithetic variates."""
+
+    paths: int = 20_000
+    antithetic: bool = True
+
+    def calculate_price(
+        self,
+        contract: OptionContract,
+        market_data: MarketData,
+        volatility: float,
+    ) -> PricingResult:
+        start = time.perf_counter()
         try:
-            validate_pricing_parameters(c,md,vol); n=self.n//2 if self.antithetic else self.n
-            z=np.random.standard_normal(n); z=np.concatenate([z,-z]) if self.antithetic else z
-            ST=md.spot_price*np.exp((md.risk_free_rate-md.dividend_yield-0.5*vol**2)*c.time_to_expiry + vol*math.sqrt(c.time_to_expiry)*z)
-            pay=np.maximum(ST-c.strike_price,0.0) if c.option_type==OptionType.CALL else np.maximum(c.strike_price-ST,0.0)
-            price=math.exp(-md.risk_free_rate*c.time_to_expiry)*float(np.mean(pay))
-            return PricingResult(c.contract_id,max(0.0,price),model_used=f"monte_carlo_{self.n}",computation_time_ms=(time.perf_counter()-t0)*1000.0)
-        except Exception as e:
-            log.exception("MC failed"); return PricingResult(c.contract_id,0.0,error=str(e),computation_time_ms=(time.perf_counter()-t0)*1000.0,model_used=f"monte_carlo_{self.n}")
+            validate_pricing_parameters(contract, market_data, volatility)
+
+            simulation_paths = max(1, self.paths)
+            draw_count = simulation_paths // 2 if self.antithetic else simulation_paths
+            draws = np.random.standard_normal(draw_count).astype(float)
+            if self.antithetic:
+                draws = np.concatenate([draws, -draws])
+
+            drift = (
+                market_data.risk_free_rate - market_data.dividend_yield - 0.5 * volatility**2
+            ) * contract.time_to_expiry
+            diffusion = volatility * math.sqrt(contract.time_to_expiry) * draws
+            terminal_prices = market_data.spot_price * np.exp(drift + diffusion)
+
+            if contract.option_type is OptionType.CALL:
+                payoff = np.maximum(terminal_prices - contract.strike_price, 0.0)
+            else:
+                payoff = np.maximum(contract.strike_price - terminal_prices, 0.0)
+
+            discounted_payoff = math.exp(
+                -market_data.risk_free_rate * contract.time_to_expiry
+            ) * float(np.mean(payoff))
+            elapsed_ms = (time.perf_counter() - start) * 1000.0
+            return PricingResult(
+                contract_id=contract.contract_id,
+                theoretical_price=max(0.0, discounted_payoff),
+                computation_time_ms=elapsed_ms,
+                model_used=f"monte_carlo_{simulation_paths}",
+                implied_volatility=volatility,
+            )
+        except Exception as exc:  # pragma: no cover - defensive programming
+            LOGGER.exception("Monte Carlo pricing failed")
+            elapsed_ms = (time.perf_counter() - start) * 1000.0
+            return PricingResult(
+                contract_id=contract.contract_id,
+                theoretical_price=0.0,
+                computation_time_ms=elapsed_ms,
+                model_used=f"monte_carlo_{self.paths}",
+                error=str(exc),
+            )
