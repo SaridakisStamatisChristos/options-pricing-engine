@@ -7,7 +7,6 @@ from typing import Dict, Iterable, Tuple
 
 def enrich_pricing_result(result: Dict[str, object], quantity: int) -> Dict[str, object]:
     """Augment a pricing result with position-level analytics."""
-
     enriched: Dict[str, object] = dict(result)
     qty = float(quantity)
     enriched["quantity"] = qty
@@ -38,9 +37,22 @@ def enrich_pricing_result(result: Dict[str, object], quantity: int) -> Dict[str,
 def annotate_results_with_quantity(
     results: Iterable[Dict[str, object]], quantities: Iterable[int]
 ) -> Tuple[Dict[str, object], ...]:
-    """Return immutable enriched pricing results zipped with quantities."""
+    """Return immutable enriched pricing results zipped with quantities.
 
-    enriched_results = []
-    for result, quantity in zip(results, quantities):
-        enriched_results.append(enrich_pricing_result(result, quantity))
+    Defensively copies both iterables so generators are consumed once and
+    verifies lengths match to avoid silent truncation.
+    """
+    result_items = tuple(results)
+    quantity_items = tuple(quantities)
+
+    if len(result_items) != len(quantity_items):
+        raise ValueError(
+            "The number of pricing results does not match the number of quantities"
+        )
+
+    enriched_results = [
+        enrich_pricing_result(result, quantity)
+        for result, quantity in zip(result_items, quantity_items)
+    ]
     return tuple(enriched_results)
+

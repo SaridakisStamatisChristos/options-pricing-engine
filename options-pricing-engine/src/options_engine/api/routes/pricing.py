@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -17,6 +18,14 @@ from ..services import annotate_results_with_quantity, enrich_pricing_result
 LOGGER = logging.getLogger(__name__)
 router = APIRouter(prefix="/pricing", tags=["pricing"])
 engine = get_engine()
+
+
+def _log_single_pricing(contract_id: str) -> None:
+    LOGGER.info("Priced %s", contract_id)
+
+
+def _log_batch_pricing(count: int) -> None:
+    LOGGER.info("Priced %d contracts", count)
 
 
 @router.post(
@@ -35,7 +44,8 @@ async def single(
     override_volatility = request.market_data.volatility
 
     start = time.perf_counter()
-    result = engine.price_option(
+    result = await asyncio.to_thread(
+        engine.price_option,
         domain_contract,
         market_data,
         model_name=request.model.value,
@@ -44,9 +54,7 @@ async def single(
     enriched_result = enrich_pricing_result(result, request.contracts[0].quantity)
     duration_ms = (time.perf_counter() - start) * 1000.0
 
-    background_tasks.add_task(
-        lambda contract_id=enriched_result["contract_id"]: LOGGER.info("Priced %s", contract_id)
-    )
+    background_tasks.add_task(_log_single_pricing, enriched_result["contract_id"])
 
     options_per_second = 1000.0 / duration_ms if duration_ms > 0 else float("inf")
     return PricingBatchResponse(
@@ -71,7 +79,8 @@ async def batch(request: PricingRequest, background_tasks: BackgroundTasks) -> P
     override_volatility = request.market_data.volatility
 
     start = time.perf_counter()
-    raw_results = engine.price_portfolio(
+    raw_results = await asyncio.to_thread(
+        engine.price_portfolio,
         contracts,
         market_data,
         model_name=request.model.value,
@@ -88,9 +97,7 @@ async def batch(request: PricingRequest, background_tasks: BackgroundTasks) -> P
     portfolio_greeks = (
         engine.calculate_portfolio_greeks(enriched_results) if request.calculate_greeks else None
     )
-    background_tasks.add_task(
-        lambda count=len(enriched_results): LOGGER.info("Priced %d contracts", count)
-    )
+    background_tasks.add_task(_log_batch_pricing, len(enriched_results))
 
     return PricingBatchResponse(
         results=list(enriched_results),

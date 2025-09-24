@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from options_engine.api.services import enrich_pricing_result
+from options_engine.api.services import annotate_results_with_quantity, enrich_pricing_result
 
 
 def test_enrich_pricing_result_adds_position_metrics() -> None:
@@ -31,3 +31,11 @@ def test_enrich_pricing_result_adds_position_metrics() -> None:
     lower, upper = enriched["position_confidence_interval"]
     assert lower == pytest.approx(46.0)
     assert upper == pytest.approx(54.0)
+
+
+def test_annotate_results_with_quantity_detects_mismatched_lengths() -> None:
+    with pytest.raises(ValueError):
+        annotate_results_with_quantity(
+            [{"contract_id": "T1", "theoretical_price": 5.0}],
+            [1, 2],
+        )
