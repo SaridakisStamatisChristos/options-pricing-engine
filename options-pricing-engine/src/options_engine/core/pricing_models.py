@@ -213,11 +213,20 @@ class MonteCarloModel:
         try:
             validate_pricing_parameters(contract, market_data, volatility)
 
-            simulation_paths = max(1, self.paths)
+            simulation_paths = int(max(1, self.paths))
+            time_sqrt = math.sqrt(contract.time_to_expiry)
+
+            if self.antithetic and simulation_paths > 1:
+                half_paths = (simulation_paths + 1) // 2
+                base_draws = np.random.standard_normal(half_paths)
+                draws = np.concatenate([base_draws, -base_draws])[:simulation_paths]
+            else:
+                draws = np.random.standard_normal(simulation_paths)
+
             drift = (
                 market_data.risk_free_rate - market_data.dividend_yield - 0.5 * volatility**2
             ) * contract.time_to_expiry
-            diffusion = volatility * math.sqrt(contract.time_to_expiry) * draws
+            diffusion = volatility * time_sqrt * draws
             terminal_prices = market_data.spot_price * np.exp(drift + diffusion)
 
             if contract.option_type is OptionType.CALL:
