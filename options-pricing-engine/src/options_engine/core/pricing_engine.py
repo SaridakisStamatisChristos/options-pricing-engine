@@ -85,6 +85,36 @@ class OptionsEngine:
             "monte_carlo_20k": MonteCarloModel(paths=20_000),
         }
         self._cache = _ResultCache(max_size=cache_size, ttl_seconds=cache_ttl_seconds)
+        self._executor_lock = threading.RLock()
+        self._executor: Optional[ThreadPoolExecutor] = ThreadPoolExecutor(
+            max_workers=self.num_threads,
+            thread_name_prefix="options-engine",
+        )
+
+    def __enter__(self) -> "OptionsEngine":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.shutdown()
+
+    def __del__(self) -> None:  # pragma: no cover - best effort cleanup
+        try:
+            self.shutdown(wait=False)
+        except Exception:
+            pass
+
+    def shutdown(self, wait: bool = True) -> None:
+        with self._executor_lock:
+            if self._executor is not None:
+                self._executor.shutdown(wait=wait, cancel_futures=True)
+                self._executor = None
+
+    def _get_executor(self) -> ThreadPoolExecutor:
+        with self._executor_lock:
+            executor = self._executor
+        if executor is None:
+            raise RuntimeError("OptionsEngine has been shut down")
+        return executor
 
     def _make_cache_key(
         self,
@@ -115,6 +145,8 @@ class OptionsEngine:
             "volatility_used": volatility,
             "computation_time_ms": result.computation_time_ms,
             "error": result.error,
+            "standard_error": result.standard_error,
+            "confidence_interval": result.confidence_interval,
         }
 
     def price_option(
@@ -162,31 +194,32 @@ class OptionsEngine:
         futures: Dict[Future[Dict[str, object]], int] = {}
         results: List[Optional[Dict[str, object]]] = [None] * len(contract_list)
 
-        with ThreadPoolExecutor(max_workers=self.num_threads) as executor:
-            for index, contract in enumerate(contract_list):
-                future = executor.submit(
-                    self.price_option,
-                    contract,
-                    market_data,
-                    model_name,
-                    override_volatility,
-                )
-                futures[future] = index
+        executor = self._get_executor()
 
-            for future in as_completed(futures):
-                index = futures[future]
-                try:
-                    results[index] = future.result()
-                except Exception as exc:  # pragma: no cover - defensive programming
-                    LOGGER.exception(
-                        "Pricing failed for contract %s", contract_list[index].contract_id
-                    )
-                    results[index] = {
-                        "contract_id": contract_list[index].contract_id,
-                        "theoretical_price": 0.0,
-                        "model_used": model_name,
-                        "error": str(exc),
-                    }
+        for index, contract in enumerate(contract_list):
+            future = executor.submit(
+                self.price_option,
+                contract,
+                market_data,
+                model_name,
+                override_volatility,
+            )
+            futures[future] = index
+
+        for future in as_completed(futures):
+            index = futures[future]
+            try:
+                results[index] = future.result()
+            except Exception as exc:  # pragma: no cover - defensive programming
+                LOGGER.exception(
+                    "Pricing failed for contract %s", contract_list[index].contract_id
+                )
+                results[index] = {
+                    "contract_id": contract_list[index].contract_id,
+                    "theoretical_price": 0.0,
+                    "model_used": model_name,
+                    "error": str(exc),
+                }
 
         return [result for result in results if result is not None]
 
@@ -203,16 +236,40 @@ class OptionsEngine:
             "position_count": 0.0,
         }
 
-        count = 0
         for result in results:
-            totals["delta"] += float(result.get("delta") or 0.0)
-            totals["gamma"] += float(result.get("gamma") or 0.0)
-            totals["theta"] += float(result.get("theta") or 0.0)
-            totals["vega"] += float(result.get("vega") or 0.0)
-            totals["rho"] += float(result.get("rho") or 0.0)
-            totals["total_value"] += float(result.get("theoretical_price") or 0.0)
-            count += 1
+            quantity = float(result.get("quantity") or 1.0)
+
+            delta_value = result.get("position_delta")
+            if delta_value is None:
+                delta_value = float(result.get("delta") or 0.0) * quantity
+            totals["delta"] += float(delta_value)
+
+            gamma_value = result.get("position_gamma")
+            if gamma_value is None:
+                gamma_value = float(result.get("gamma") or 0.0) * quantity
+            totals["gamma"] += float(gamma_value)
+
+            theta_value = result.get("position_theta")
+            if theta_value is None:
+                theta_value = float(result.get("theta") or 0.0) * quantity
+            totals["theta"] += float(theta_value)
+
+            vega_value = result.get("position_vega")
+            if vega_value is None:
+                vega_value = float(result.get("vega") or 0.0) * quantity
+            totals["vega"] += float(vega_value)
+
+            rho_value = result.get("position_rho")
+            if rho_value is None:
+                rho_value = float(result.get("rho") or 0.0) * quantity
+            totals["rho"] += float(rho_value)
+
+            total_value = result.get("position_value")
+            if total_value is None:
+                total_value = float(result.get("theoretical_price") or 0.0) * quantity
+            totals["total_value"] += float(total_value)
+
+            totals["position_count"] += quantity
 
         totals["total_vega_exposure"] = totals["vega"] * 100.0
-        totals["position_count"] = float(count)
         return totals

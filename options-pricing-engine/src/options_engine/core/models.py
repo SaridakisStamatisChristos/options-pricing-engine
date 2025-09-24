@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Optional
+from typing import Optional, Tuple
 
 
 class OptionType(str, Enum):
@@ -83,3 +83,5 @@ class PricingResult:
     computation_time_ms: float = 0.0
     model_used: str = "unknown"
     error: Optional[str] = None
+    standard_error: Optional[float] = None
+    confidence_interval: Optional[Tuple[float, float]] = None
