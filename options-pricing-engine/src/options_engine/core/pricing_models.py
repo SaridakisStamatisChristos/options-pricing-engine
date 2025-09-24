@@ -199,7 +199,8 @@ _THREAD_LOCAL_RNG = threading.local()
 
 
 def _thread_local_generator() -> np.random.Generator:
-    generator: Optional[np.random.Generator] = getattr(_THREAD_LOCAL_RNG, "generator", None)
+    """Return a thread-local numpy Generator, creating one if needed."""
+    generator = getattr(_THREAD_LOCAL_RNG, "generator", None)
     if generator is None:
         generator = np.random.default_rng()
         _THREAD_LOCAL_RNG.generator = generator
@@ -230,7 +231,7 @@ class MonteCarloModel:
 
             if self.antithetic:
                 # Make path count even and at least 2 so pairs exist
-                simulation_paths = max(2, simulation_paths + simulation_paths % 2)
+                simulation_paths = max(2, simulation_paths + (simulation_paths % 2))
                 half_paths = simulation_paths // 2
                 base_draws = rng.standard_normal(half_paths)
                 draws = np.empty(simulation_paths, dtype=float)
@@ -240,7 +241,6 @@ class MonteCarloModel:
                 draws = rng.standard_normal(simulation_paths)
 
             time_sqrt = math.sqrt(max(0.0, contract.time_to_expiry))
-
             drift = (
                 market_data.risk_free_rate - market_data.dividend_yield - 0.5 * volatility**2
             ) * contract.time_to_expiry

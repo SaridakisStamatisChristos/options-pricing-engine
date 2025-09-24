@@ -38,19 +38,36 @@ async def single(
 ) -> PricingBatchResponse:
     if not request.contracts:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No contracts provided")
+    if len(request.contracts) != 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Single pricing endpoint expects exactly one contract",
+        )
 
     domain_contract = to_option_contract(request.contracts[0])
     market_data = to_market_data(request)
     override_volatility = request.market_data.volatility
 
     start = time.perf_counter()
-    result = await asyncio.to_thread(
-        engine.price_option,
-        domain_contract,
-        market_data,
-        model_name=request.model.value,
-        override_volatility=override_volatility,
-    )
+    try:
+        result = await asyncio.to_thread(
+            engine.price_option,
+            domain_contract,
+            market_data,
+            model_name=request.model.value,
+            override_volatility=override_volatility,
+        )
+    except ValueError as exc:
+        # bad inputs, unsupported model, etc.
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        # engine unavailable or internal transient failure
+        LOGGER.exception("Pricing engine unavailable", exc_info=exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Pricing engine unavailable",
+        ) from exc
+
     enriched_result = enrich_pricing_result(result, request.contracts[0].quantity)
     duration_ms = (time.perf_counter() - start) * 1000.0
 
@@ -84,16 +101,30 @@ async def batch(request: PricingRequest, background_tasks: BackgroundTasks) -> P
     override_volatility = request.market_data.volatility
 
     start = time.perf_counter()
-    raw_results = await asyncio.to_thread(
-        engine.price_portfolio,
-        contracts,
-        market_data,
-        model_name=request.model.value,
-        override_volatility=override_volatility,
-    )
-    enriched_results = annotate_results_with_quantity(
-        raw_results, (contract.quantity for contract in request.contracts)
-    )
+    try:
+        raw_results = await asyncio.to_thread(
+            engine.price_portfolio,
+            contracts,
+            market_data,
+            model_name=request.model.value,
+            override_volatility=override_volatility,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        LOGGER.exception("Pricing engine unavailable", exc_info=exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Pricing engine unavailable",
+        ) from exc
+
+    try:
+        enriched_results = annotate_results_with_quantity(
+            raw_results, (contract.quantity for contract in request.contracts)
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
     duration_ms = (time.perf_counter() - start) * 1000.0
     options_per_second = (
         len(enriched_results) / (duration_ms / 1000.0) if duration_ms > 0 else float("inf")
