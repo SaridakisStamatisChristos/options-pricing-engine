@@ -2,24 +2,928 @@
   "black_scholes": {
     "p50_latency_ms": 0.002503,
     "p95_latency_ms": 0.004211,
-    "p99_latency_ms": 0.004860
+    "p99_latency_ms": 0.00486
   },
   "binomial": {
     "p50_latency_ms": 2.862136,
-    "p95_latency_ms": 3.204430,
+    "p95_latency_ms": 3.20443,
     "p99_latency_ms": 4.498741
   },
   "monte_carlo": {
-    "p50_latency_ms": 1.158283,
-    "p95_latency_ms": 1.627915,
-    "p99_latency_ms": 1.799404,
-    "median_ci_half_width": 0.049623,
-    "median_ci_bps": 113.268816,
+    "bias_test": {
+      "baseline_mean": 3.541843713273547,
+      "p_value": 0.9999799995429179,
+      "sample_size": 100,
+      "vr_mean": 3.541864323927028
+    },
+    "bucket_counts": {
+      "A": 31,
+      "B": 1,
+      "C": 4
+    },
+    "cell_metrics": [
+      {
+        "beta": [
+          0.9990005048035838,
+          -1.2395889630545938e-11,
+          -2.4882392449919825e-07
+        ],
+        "bucket": "A",
+        "cell_price": 15.034970012080048,
+        "ci_abs": 2.625464255353719e-13,
+        "ci_bps": 1.7462384382837174e-10,
+        "cv_used": true,
+        "paths_used": 8192,
+        "raw_var": 11.246403310134944,
+        "residual_var": 1.4955183120835998e-22,
+        "rho": 0.9999999999999994,
+        "scenario": "GOLDEN_1",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": null,
+        "bucket": "C",
+        "cell_price": 0.0,
+        "ci_abs": 0.0,
+        "ci_bps": null,
+        "cv_used": false,
+        "paths_used": 2048,
+        "raw_var": 0.0,
+        "residual_var": 0.0,
+        "rho": null,
+        "scenario": "GOLDEN_2",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -4.161245301001361e-06,
+          1.361264587264688e-08,
+          0.00015388463788707348,
+          0.999999910514044,
+          -0.9999999102020758
+        ],
+        "bucket": "A",
+        "cell_price": 1.3621570610725962,
+        "ci_abs": 5.189925272375072e-10,
+        "ci_bps": 3.8100784562159052e-06,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 4.0528711212396775,
+        "residual_var": 1.171094039533842e-15,
+        "rho": 0.875963582782989,
+        "scenario": "GOLDEN_3",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -5.069278614006227e-06,
+          1.557643896727486e-08,
+          0.00016673334135065314,
+          -0.9999999078392905,
+          0.9999999077123463
+        ],
+        "bucket": "A",
+        "cell_price": 1.3121945464955664,
+        "ci_abs": 5.182510578308689e-10,
+        "ci_bps": 3.949498641150007e-06,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 3.6180275654726533,
+        "residual_var": 1.1682782959286883e-15,
+        "rho": -0.8589998128196641,
+        "scenario": "GOLDEN_4",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": null,
+        "bucket": "C",
+        "cell_price": 0.0,
+        "ci_abs": 0.0,
+        "ci_bps": null,
+        "cv_used": false,
+        "paths_used": 2048,
+        "raw_var": 0.0,
+        "residual_var": 0.0,
+        "rho": null,
+        "scenario": "GOLDEN_5",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -0.9990005058395666
+        ],
+        "bucket": "A",
+        "cell_price": 14.935044982921188,
+        "ci_abs": 3.217159713642256e-13,
+        "ci_bps": 2.154101120767433e-10,
+        "cv_used": true,
+        "paths_used": 8192,
+        "raw_var": 11.246416282191579,
+        "residual_var": 2.207107652526254e-22,
+        "rho": -0.9999999999999996,
+        "scenario": "GOLDEN_6",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          1.118700770986981e-06,
+          -2.400813483740218e-09,
+          -4.978407676205342e-05,
+          0.9999998688818792,
+          -0.9999998690743153
+        ],
+        "bucket": "A",
+        "cell_price": 15.050309603645463,
+        "ci_abs": 5.672572420969787e-10,
+        "ci_bps": 3.76907357413816e-07,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 44.5467013765261,
+        "residual_var": 1.3827976102801986e-15,
+        "rho": 0.999447518378264,
+        "scenario": "GOLDEN_7",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          3.7971033335871903e-07,
+          -9.426339768453203e-10,
+          -1.9026206689814624e-05,
+          -0.99999996604018,
+          0.999999964461651
+        ],
+        "bucket": "C",
+        "cell_price": 0.015339591572913607,
+        "ci_abs": 1.276308231703515e-10,
+        "ci_bps": null,
+        "cv_used": true,
+        "paths_used": 32768,
+        "raw_var": 0.051248827685063336,
+        "residual_var": 1.3941776289031177e-16,
+        "rho": 0.7416289077670984,
+        "scenario": "GOLDEN_8",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -2.3501441012579363e-06,
+          7.976140105091128e-09,
+          7.192040324670406e-05,
+          0.999999883565595,
+          -0.9999998828040564
+        ],
+        "bucket": "A",
+        "cell_price": 2.6987340444954455,
+        "ci_abs": 1.4927357858081787e-09,
+        "ci_bps": 5.5312445064858555e-06,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 16.717001188725604,
+        "residual_var": 9.50890463351505e-15,
+        "rho": 0.8904677518235078,
+        "scenario": "GOLDEN_9",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -2.266896557096144e-06,
+          7.000504910549163e-09,
+          6.287365777364686e-05,
+          -0.9999999148655447,
+          0.9999999133306018
+        ],
+        "bucket": "A",
+        "cell_price": 2.648771529898508,
+        "ci_abs": 1.1987334493542878e-09,
+        "ci_bps": 4.525620408643622e-06,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 14.04198026155521,
+        "residual_var": 6.129132800499888e-15,
+        "rho": -0.8654082923699001,
+        "scenario": "GOLDEN_10",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          2.035974507456986e-07,
+          -5.152294294257267e-10,
+          -1.0025947452362808e-05,
+          0.9999999834093091,
+          -0.9999999826967274
+        ],
+        "bucket": "C",
+        "cell_price": 0.04964967118041045,
+        "ci_abs": 8.504373263034391e-11,
+        "ci_bps": null,
+        "cv_used": true,
+        "paths_used": 32768,
+        "raw_var": 0.26089918623101693,
+        "residual_var": 6.188182035602395e-17,
+        "rho": 0.744708046945412,
+        "scenario": "GOLDEN_11",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          3.000090952271603e-07,
+          -7.982672961456661e-10,
+          -1.644011315943061e-05,
+          -0.99999994541274,
+          0.9999999435378204
+        ],
+        "bucket": "A",
+        "cell_price": 14.984694654097666,
+        "ci_abs": 3.4060549488749e-10,
+        "ci_bps": 2.273022592384618e-07,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 43.3146040729401,
+        "residual_var": 5.009531273817711e-16,
+        "rho": -0.9979186022457055,
+        "scenario": "GOLDEN_12",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -1.717451142043832e-07,
+          3.9027013001148705e-10,
+          8.05391036825114e-06,
+          1.0000000086180474,
+          -1.0000000082216536
+        ],
+        "bucket": "A",
+        "cell_price": 15.583544518296158,
+        "ci_abs": 1.1936765362310454e-10,
+        "ci_bps": 7.659852576091316e-08,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 103.17429526586776,
+        "residual_var": 6.456872714346049e-17,
+        "rho": 0.9960910867511518,
+        "scenario": "GOLDEN_13",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -1.872890535940097e-07,
+          4.5220762647604787e-10,
+          9.591097564144392e-06,
+          -1.000000008637289,
+          1.0000000087780858
+        ],
+        "bucket": "B",
+        "cell_price": 0.23653246770723535,
+        "ci_abs": 1.2725682156099314e-10,
+        "ci_bps": 5.380099518451878e-06,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 1.468371777684123,
+        "residual_var": 6.950293926461449e-17,
+        "rho": 0.750013679317363,
+        "scenario": "GOLDEN_14",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -2.2298998659753325e-06,
+          7.533658115966467e-09,
+          7.969827830754613e-05,
+          0.9999998879833609,
+          -0.9999998880365774
+        ],
+        "bucket": "A",
+        "cell_price": 4.450641518442272,
+        "ci_abs": 3.324332680274008e-09,
+        "ci_bps": 7.469333727506157e-06,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 45.22358104898275,
+        "residual_var": 4.756773387975365e-14,
+        "rho": 0.9128472045013225,
+        "scenario": "GOLDEN_15",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -5.99530321668864e-07,
+          1.808211128892754e-09,
+          2.1266161590485143e-05,
+          -0.9999999552736049,
+          0.9999999557560961
+        ],
+        "bucket": "A",
+        "cell_price": 3.9543769740882135,
+        "ci_abs": 9.396582248337105e-10,
+        "ci_bps": 2.376248473504157e-06,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 31.586962775898016,
+        "residual_var": 3.7665630267411656e-15,
+        "rho": -0.8640284728174181,
+        "scenario": "GOLDEN_16",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -3.667002672915433e-07,
+          9.643784655449813e-10,
+          1.730462121495423e-05,
+          0.999999987662728,
+          -0.9999999880727529
+        ],
+        "bucket": "A",
+        "cell_price": 0.546487893657359,
+        "ci_abs": 1.7422782258152531e-10,
+        "ci_bps": 3.188136912155715e-06,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 5.54644076770742,
+        "residual_var": 1.2969778823930168e-16,
+        "rho": 0.7567851605090448,
+        "scenario": "GOLDEN_17",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -1.6230793533588128e-07,
+          4.1163433109016104e-10,
+          7.4037880270066315e-06,
+          -0.9999999943485317,
+          0.9999999943522917
+        ],
+        "bucket": "A",
+        "cell_price": 14.900970855543244,
+        "ci_abs": 6.454864180113669e-11,
+        "ci_bps": 4.3318413563049303e-08,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 90.17908232891574,
+        "residual_var": 1.779042579302474e-17,
+        "rho": -0.987239455384147,
+        "scenario": "GOLDEN_18",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -6.905185961490223e-07,
+          1.4638334609995185e-09,
+          3.4493073783114306e-05,
+          1.0000000355452427,
+          -1.0000000327642358
+        ],
+        "bucket": "A",
+        "cell_price": 17.71526584834112,
+        "ci_abs": 3.125392113127229e-09,
+        "ci_bps": 1.7642366419355174e-06,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 341.5579700901465,
+        "residual_var": 4.197269924927087e-14,
+        "rho": 0.987566889459305,
+        "scenario": "GOLDEN_19",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -1.01982155869535e-06,
+          2.217549754867732e-09,
+          5.699938833552986e-05,
+          -1.0000000817574084,
+          1.0000000783362406
+        ],
+        "bucket": "A",
+        "cell_price": 2.368253797763339,
+        "ci_abs": 4.036319211220994e-09,
+        "ci_bps": 1.7043440255571568e-05,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 30.264795360373398,
+        "residual_var": 7.081471750532269e-14,
+        "rho": 0.751446633462791,
+        "scenario": "GOLDEN_20",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -1.720082698124326e-07,
+          5.282214436809865e-10,
+          7.103252106358625e-06,
+          0.9999999741212218,
+          -0.9999999738880111
+        ],
+        "bucket": "A",
+        "cell_price": 8.634365624543713,
+        "ci_abs": 1.681041159507553e-09,
+        "ci_bps": 1.946919128290202e-06,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 200.07432641990275,
+        "residual_var": 1.2457565830075938e-14,
+        "rho": 0.9456472685589314,
+        "scenario": "GOLDEN_21",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -4.2256026076297513e-07,
+          1.09257948315425e-09,
+          1.6021409910665024e-05,
+          -0.9999999630210161,
+          0.9999999623204222
+        ],
+        "bucket": "A",
+        "cell_price": 8.138101080184704,
+        "ci_abs": 2.9092248314244768e-09,
+        "ci_bps": 3.574820222506315e-06,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 115.07057038533705,
+        "residual_var": 3.611993165705576e-14,
+        "rho": -0.8823876815082982,
+        "scenario": "GOLDEN_22",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -2.1290511113566839e-07,
+          6.413103673589746e-10,
+          8.728502002036557e-06,
+          0.9999999709567686,
+          -0.9999999698308124
+        ],
+        "bucket": "A",
+        "cell_price": 3.5835624357046614,
+        "ci_abs": 1.175507603671621e-09,
+        "ci_bps": 3.2802766095533996e-06,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 89.1057193110664,
+        "residual_var": 6.139929460545525e-15,
+        "rho": 0.8440131738975243,
+        "scenario": "GOLDEN_23",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -3.824162962762067e-07,
+          9.80153716953867e-10,
+          1.4349769732764697e-05,
+          -0.999999955790494,
+          0.9999999540341045
+        ],
+        "bucket": "A",
+        "cell_price": 17.938045397589725,
+        "ci_abs": 1.8276751178754865e-09,
+        "ci_bps": 1.0188819781452136e-06,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 238.0139352215563,
+        "residual_var": 1.425310515971705e-14,
+        "rho": -0.960036101361941,
+        "scenario": "GOLDEN_24",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -7.900159643637782e-07,
+          1.627375044958434e-09,
+          4.11496902267599e-05,
+          1.0000000512029543,
+          -1.000000051038778
+        ],
+        "bucket": "A",
+        "cell_price": 17.49005620266915,
+        "ci_abs": 1.7918412578844034e-09,
+        "ci_bps": 1.0244914236530304e-06,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 265.7477077962352,
+        "residual_var": 1.3693654895834292e-14,
+        "rho": 0.9900726526170551,
+        "scenario": "GOLDEN_25",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -5.573624262049913e-07,
+          1.2065676586068258e-09,
+          3.156769911529509e-05,
+          -1.0000000412895387,
+          1.000000040925261
+        ],
+        "bucket": "A",
+        "cell_price": 1.466732594006435,
+        "ci_abs": 1.3643237968169648e-09,
+        "ci_bps": 9.301789585859431e-06,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 16.085264633586043,
+        "residual_var": 8.04343662515309e-15,
+        "rho": 0.7528679691691575,
+        "scenario": "GOLDEN_26",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -6.732668109638671e-07,
+          1.924754396008907e-09,
+          2.9612336153828664e-05,
+          0.9999999424752619,
+          -0.9999999363468053
+        ],
+        "bucket": "A",
+        "cell_price": 7.913205741252307,
+        "ci_abs": 3.781685701694931e-09,
+        "ci_bps": 4.778955363160392e-06,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 150.38137963685537,
+        "residual_var": 6.397424759216201e-14,
+        "rho": 0.9435387438987249,
+        "scenario": "GOLDEN_27",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -9.449888741630849e-07,
+          2.6382938093855e-09,
+          3.5034259080210116e-05,
+          -0.9999999149506147,
+          0.9999999110849292
+        ],
+        "bucket": "A",
+        "cell_price": 6.446565135759075,
+        "ci_abs": 5.139031831219356e-09,
+        "ci_bps": 7.971736456540498e-06,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 80.67663235614367,
+        "residual_var": 1.1265940550938286e-13,
+        "rho": -0.8687029388358845,
+        "scenario": "GOLDEN_28",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -4.6021936497298187e-07,
+          1.3018468172415904e-09,
+          2.0049494879583138e-05,
+          0.9999999530804168,
+          -0.9999999519351532
+        ],
+        "bucket": "A",
+        "cell_price": 2.844146681627354,
+        "ci_abs": 1.4903234652143005e-09,
+        "ci_bps": 5.239966963875339e-06,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 58.11686917305843,
+        "residual_var": 9.61442511928424e-15,
+        "rho": 0.8182913938530265,
+        "scenario": "GOLDEN_29",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -4.906747889693642e-07,
+          1.2574243477076965e-09,
+          1.9501210253514105e-05,
+          -0.9999999543072229,
+          0.9999999528829888
+        ],
+        "bucket": "A",
+        "cell_price": 15.93418907939325,
+        "ci_abs": 1.5061746950082072e-09,
+        "ci_bps": 9.452471584864362e-07,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 184.3493173455425,
+        "residual_var": 9.726653621751826e-15,
+        "rho": -0.9617192456263067,
+        "scenario": "GOLDEN_30",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -2.4889409861209877e-07,
+          3.763243174817329e-10,
+          1.2600553874082794e-05,
+          1.0000000465582277,
+          -1.0000000422511122
+        ],
+        "bucket": "A",
+        "cell_price": 22.691466911935915,
+        "ci_abs": 4.905439337562266e-09,
+        "ci_bps": 2.1617991276632544e-06,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 973.5070913389015,
+        "residual_var": 1.0278821384660991e-13,
+        "rho": 0.9810673255995976,
+        "scenario": "GOLDEN_31",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -2.3858727559756357e-07,
+          4.4272744762676184e-10,
+          1.5034144954713258e-05,
+          -1.0000000525142394,
+          1.0000000505481972
+        ],
+        "bucket": "A",
+        "cell_price": 6.668143303272486,
+        "ci_abs": 5.840753451936453e-09,
+        "ci_bps": 8.7591900568034e-06,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 125.98354055260614,
+        "residual_var": 1.4626795325425073e-13,
+        "rho": -0.8140833537484178,
+        "scenario": "GOLDEN_32",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -1.2789042929823872e-07,
+          3.1673282088424315e-10,
+          6.021256136583579e-06,
+          0.9999999837543248,
+          -0.9999999790926104
+        ],
+        "bucket": "A",
+        "cell_price": 14.997203579193478,
+        "ci_abs": 5.1697582354742824e-09,
+        "ci_bps": 3.4471481354341275e-06,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 721.3751543509064,
+        "residual_var": 1.2085247900561308e-13,
+        "rho": 0.9730843161434697,
+        "scenario": "GOLDEN_33",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -4.663025081810452e-07,
+          1.0243186366878336e-09,
+          2.0482644030812873e-05,
+          -0.9999999701216294,
+          0.9999999505343246
+        ],
+        "bucket": "A",
+        "cell_price": 13.530562974108198,
+        "ci_abs": 1.5289852183325534e-08,
+        "ci_bps": 1.1300233562035723e-05,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 275.24327220122444,
+        "residual_var": 1.006341720438812e-12,
+        "rho": -0.8971352494771223,
+        "scenario": "GOLDEN_34",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -6.560208813947807e-08,
+          1.9536405894837238e-10,
+          2.708654172468085e-06,
+          0.9999999806396094,
+          -0.9999999781714779
+        ],
+        "bucket": "A",
+        "cell_price": 9.631236536871043,
+        "ci_abs": 2.7054181937659514e-09,
+        "ci_bps": 2.8090039979901444e-06,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 499.65266676433373,
+        "residual_var": 3.1584177714491556e-14,
+        "rho": 0.9493403801094358,
+        "scenario": "GOLDEN_35",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -2.588313456861404e-07,
+          5.745856682603346e-10,
+          8.967629612777764e-06,
+          -0.9999999486358728,
+          0.9999999400405284
+        ],
+        "bucket": "A",
+        "cell_price": 22.72127893461274,
+        "ci_abs": 8.21044909990089e-09,
+        "ci_bps": 3.6135505943696686e-06,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 464.7160433245882,
+        "residual_var": 3.0027443949438156e-13,
+        "rho": -0.9435216072140612,
+        "scenario": "GOLDEN_36",
+        "vr_pipeline": "sobol_stratified_control"
+      }
+    ],
+    "median_ci_abs_bucket_C": 4.2521866315171953e-11,
+    "median_ci_bps": 3.3637123724937635e-06,
+    "median_ci_bps_all_cells": 3.510984178970221e-06,
+    "median_ci_bps_bucket_A": 3.2802766095533996e-06,
+    "median_ci_bps_bucket_B": 5.380099518451878e-06,
+    "median_ci_half_width": 1.4273236310156327e-09,
     "paths_used": 16384,
-    "median_ci_bps_bucket_A": 0.0,
-    "median_ci_bps_bucket_B": 0.0,
-    "median_ci_abs_bucket_C": 0.0,
-    "bucket_counts": {"A": 0, "B": 0, "C": 0},
-    "median_ci_bps_all_cells": 0.0
+    "worst_cells": [
+      {
+        "beta": [
+          -1.01982155869535e-06,
+          2.217549754867732e-09,
+          5.699938833552986e-05,
+          -1.0000000817574084,
+          1.0000000783362406
+        ],
+        "bucket": "A",
+        "cell_price": 2.368253797763339,
+        "ci_abs": 4.036319211220994e-09,
+        "ci_bps": 1.7043440255571568e-05,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 30.264795360373398,
+        "residual_var": 7.081471750532269e-14,
+        "rho": 0.751446633462791,
+        "scenario": "GOLDEN_20",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -4.663025081810452e-07,
+          1.0243186366878336e-09,
+          2.0482644030812873e-05,
+          -0.9999999701216294,
+          0.9999999505343246
+        ],
+        "bucket": "A",
+        "cell_price": 13.530562974108198,
+        "ci_abs": 1.5289852183325534e-08,
+        "ci_bps": 1.1300233562035723e-05,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 275.24327220122444,
+        "residual_var": 1.006341720438812e-12,
+        "rho": -0.8971352494771223,
+        "scenario": "GOLDEN_34",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -5.573624262049913e-07,
+          1.2065676586068258e-09,
+          3.156769911529509e-05,
+          -1.0000000412895387,
+          1.000000040925261
+        ],
+        "bucket": "A",
+        "cell_price": 1.466732594006435,
+        "ci_abs": 1.3643237968169648e-09,
+        "ci_bps": 9.301789585859431e-06,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 16.085264633586043,
+        "residual_var": 8.04343662515309e-15,
+        "rho": 0.7528679691691575,
+        "scenario": "GOLDEN_26",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -2.3858727559756357e-07,
+          4.4272744762676184e-10,
+          1.5034144954713258e-05,
+          -1.0000000525142394,
+          1.0000000505481972
+        ],
+        "bucket": "A",
+        "cell_price": 6.668143303272486,
+        "ci_abs": 5.840753451936453e-09,
+        "ci_bps": 8.7591900568034e-06,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 125.98354055260614,
+        "residual_var": 1.4626795325425073e-13,
+        "rho": -0.8140833537484178,
+        "scenario": "GOLDEN_32",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -9.449888741630849e-07,
+          2.6382938093855e-09,
+          3.5034259080210116e-05,
+          -0.9999999149506147,
+          0.9999999110849292
+        ],
+        "bucket": "A",
+        "cell_price": 6.446565135759075,
+        "ci_abs": 5.139031831219356e-09,
+        "ci_bps": 7.971736456540498e-06,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 80.67663235614367,
+        "residual_var": 1.1265940550938286e-13,
+        "rho": -0.8687029388358845,
+        "scenario": "GOLDEN_28",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          -1.872890535940097e-07,
+          4.5220762647604787e-10,
+          9.591097564144392e-06,
+          -1.000000008637289,
+          1.0000000087780858
+        ],
+        "bucket": "B",
+        "cell_price": 0.23653246770723535,
+        "ci_abs": 1.2725682156099314e-10,
+        "ci_bps": 5.380099518451878e-06,
+        "cv_used": true,
+        "paths_used": 16384,
+        "raw_var": 1.468371777684123,
+        "residual_var": 6.950293926461449e-17,
+        "rho": 0.750013679317363,
+        "scenario": "GOLDEN_14",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          3.7971033335871903e-07,
+          -9.426339768453203e-10,
+          -1.9026206689814624e-05,
+          -0.99999996604018,
+          0.999999964461651
+        ],
+        "bucket": "C",
+        "cell_price": 0.015339591572913607,
+        "ci_abs": 1.276308231703515e-10,
+        "ci_bps": null,
+        "cv_used": true,
+        "paths_used": 32768,
+        "raw_var": 0.051248827685063336,
+        "residual_var": 1.3941776289031177e-16,
+        "rho": 0.7416289077670984,
+        "scenario": "GOLDEN_8",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": [
+          2.035974507456986e-07,
+          -5.152294294257267e-10,
+          -1.0025947452362808e-05,
+          0.9999999834093091,
+          -0.9999999826967274
+        ],
+        "bucket": "C",
+        "cell_price": 0.04964967118041045,
+        "ci_abs": 8.504373263034391e-11,
+        "ci_bps": null,
+        "cv_used": true,
+        "paths_used": 32768,
+        "raw_var": 0.26089918623101693,
+        "residual_var": 6.188182035602395e-17,
+        "rho": 0.744708046945412,
+        "scenario": "GOLDEN_11",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": null,
+        "bucket": "C",
+        "cell_price": 0.0,
+        "ci_abs": 0.0,
+        "ci_bps": null,
+        "cv_used": false,
+        "paths_used": 2048,
+        "raw_var": 0.0,
+        "residual_var": 0.0,
+        "rho": null,
+        "scenario": "GOLDEN_2",
+        "vr_pipeline": "sobol_stratified_control"
+      },
+      {
+        "beta": null,
+        "bucket": "C",
+        "cell_price": 0.0,
+        "ci_abs": 0.0,
+        "ci_bps": null,
+        "cv_used": false,
+        "paths_used": 2048,
+        "raw_var": 0.0,
+        "residual_var": 0.0,
+        "rho": null,
+        "scenario": "GOLDEN_5",
+        "vr_pipeline": "sobol_stratified_control"
+      }
+    ],
+    "p50_latency_ms": 1.5504085000017653,
+    "p95_latency_ms": 1.9036992999950542,
+    "p99_latency_ms": 2.223496900000014
   }
 }
