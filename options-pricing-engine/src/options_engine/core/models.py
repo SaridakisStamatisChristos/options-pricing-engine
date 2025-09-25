@@ -5,7 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Optional, Tuple
+from typing import Optional, Tuple, TYPE_CHECKING
+
+
+if TYPE_CHECKING:
+    from .replay import ReplayCapsule
 
 
 class OptionType(str, Enum):
@@ -85,3 +89,5 @@ class PricingResult:
     error: Optional[str] = None
     standard_error: Optional[float] = None
     confidence_interval: Optional[Tuple[float, float]] = None
+    capsule_id: Optional[str] = None
+    replay_capsule: Optional["ReplayCapsule"] = None

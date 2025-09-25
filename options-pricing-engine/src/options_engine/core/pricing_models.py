@@ -1,4 +1,3 @@
-# mypy: ignore-errors
 """Pricing model implementations used by the engine."""
 
 from __future__ import annotations
@@ -15,6 +14,7 @@ from numpy.random import Generator, SeedSequence
 from scipy.stats import norm
 
 from .models import ExerciseStyle, MarketData, OptionContract, OptionType, PricingResult
+from .replay import ReplayCapsule, build_replay_capsule
 from ..utils.validation import validate_pricing_parameters
 
 LOGGER = logging.getLogger(__name__)
@@ -47,6 +47,27 @@ def _log_moneyness_threshold(time_to_expiry: float) -> float:
         if time_to_expiry <= maturity:
             return clamp
     return LOG_MONEYNESS_CLAMP[-1][1]
+
+
+# --- kept from the feature branch; required by replay capsules ---
+def _contract_payload(contract: OptionContract) -> Dict[str, object]:
+    return {
+        "contract_id": contract.contract_id,
+        "symbol": contract.symbol,
+        "strike_price": contract.strike_price,
+        "time_to_expiry": contract.time_to_expiry,
+        "option_type": contract.option_type.value,
+        "exercise_style": contract.exercise_style.value,
+    }
+
+
+def _market_payload(market_data: MarketData) -> Dict[str, object]:
+    return {
+        "spot_price": market_data.spot_price,
+        "risk_free_rate": market_data.risk_free_rate,
+        "dividend_yield": market_data.dividend_yield,
+    }
+# -----------------------------------------------------------------
 
 
 def _black_scholes_payoff(
@@ -97,7 +118,11 @@ def _black_scholes_greeks(
 
     clamp_threshold = _log_moneyness_threshold(time_to_expiry)
     if log_moneyness > clamp_threshold:
-        tail_call = strike * discount_rate * _norm_cdf(-d2) - spot * discount_dividend * _norm_cdf(-d1)
+        # Tail-safe formulation to reduce catastrophic cancellation
+        tail_call = (
+            strike * discount_rate * _norm_cdf(-d2)
+            - spot * discount_dividend * _norm_cdf(-d1)
+        )
         call_price = parity_anchor + tail_call
     else:
         call_price = spot * discount_dividend * cdf_d1 - strike * discount_rate * cdf_d2
@@ -326,14 +351,13 @@ _THREAD_LOCAL_RNG = threading.local()
 
 
 def _thread_local_generator(seed_sequence: Optional[SeedSequence] = None) -> Generator:
-    """Return a thread-local numpy Generator, creating one if needed."""
-
+    """Return a numpy Generator with deterministic seeding when requested."""
+    if seed_sequence is not None:
+        return np.random.default_rng(seed_sequence)
     generator: Optional[Generator] = getattr(_THREAD_LOCAL_RNG, "generator", None)
-    current_seed = getattr(_THREAD_LOCAL_RNG, "seed_sequence", None)
-    if generator is None or current_seed is not seed_sequence:
-        generator = np.random.default_rng(seed_sequence)
+    if generator is None:
+        generator = np.random.default_rng()
         _THREAD_LOCAL_RNG.generator = generator
-        _THREAD_LOCAL_RNG.seed_sequence = seed_sequence
     return generator
 
 
@@ -343,9 +367,7 @@ class MonteCarloModel:
 
     paths: int = 20_000
     antithetic: bool = True
-
-    # Optional deterministic seed shared across threads
-    seed_sequence: Optional[SeedSequence] = None
+    seed_sequence: Optional[SeedSequence] = None  # Optional deterministic seed shared across threads
 
     def calculate_price(
         self,
@@ -359,18 +381,12 @@ class MonteCarloModel:
         try:
             validate_pricing_parameters(contract, market_data, volatility)
 
-            # Ensure positive, integer number of simulation paths
             simulation_paths = int(max(1, self.paths))
 
             if contract.time_to_expiry <= 1e-12 or volatility <= 1e-12:
-                (
-                    price,
-                    delta,
-                    gamma,
-                    _theta,
-                    vega,
-                    _rho,
-                ) = _black_scholes_greeks(contract, market_data, max(volatility, 1e-12))
+                price, delta, gamma, _theta, vega, _rho = _black_scholes_greeks(
+                    contract, market_data, max(volatility, 1e-12)
+                )
                 elapsed_ms = (time.perf_counter() - start) * 1000.0
                 return PricingResult(
                     contract_id=contract.contract_id,
@@ -387,7 +403,6 @@ class MonteCarloModel:
             rng = _thread_local_generator(sequence)
 
             if self.antithetic:
-                # Make path count even and at least 2 so pairs exist
                 simulation_paths = max(2, simulation_paths + (simulation_paths % 2))
                 half_paths = simulation_paths // 2
                 base_draws = rng.standard_normal(half_paths)
@@ -417,9 +432,7 @@ class MonteCarloModel:
             if contract.option_type is OptionType.CALL:
                 indicator = terminal_prices > contract.strike_price
                 delta_path = discount_factor * np.where(
-                    indicator,
-                    terminal_prices / market_data.spot_price,
-                    0.0,
+                    indicator, terminal_prices / market_data.spot_price, 0.0
                 )
                 sensitivity_term = terminal_prices * (
                     sqrt_time * draws - volatility * contract.time_to_expiry
@@ -428,9 +441,7 @@ class MonteCarloModel:
             else:
                 indicator = terminal_prices < contract.strike_price
                 delta_path = -discount_factor * np.where(
-                    indicator,
-                    terminal_prices / market_data.spot_price,
-                    0.0,
+                    indicator, terminal_prices / market_data.spot_price, 0.0
                 )
                 sensitivity_term = -terminal_prices * (
                     sqrt_time * draws - volatility * contract.time_to_expiry
@@ -462,12 +473,28 @@ class MonteCarloModel:
                 standard_error = sample_std / math.sqrt(simulation_paths)
                 z_score = norm.ppf(0.975)  # 95% CI
                 half_width = z_score * standard_error
-                confidence_interval = (
-                    theoretical_price - half_width,
-                    theoretical_price + half_width,
-                )
+                confidence_interval = (theoretical_price - half_width, theoretical_price + half_width)
 
             elapsed_ms = (time.perf_counter() - start) * 1000.0
+
+            capsule: Optional[ReplayCapsule] = None
+            try:
+                capsule = build_replay_capsule(
+                    seed_sequence=sequence,
+                    model_name="monte_carlo",
+                    model_config={
+                        "paths": simulation_paths,
+                        "antithetic": self.antithetic,
+                    },
+                    request={
+                        "contract": _contract_payload(contract),
+                        "market_data": _market_payload(market_data),
+                        "volatility": volatility,
+                    },
+                )
+            except ValueError:
+                capsule = None
+
             return PricingResult(
                 contract_id=contract.contract_id,
                 theoretical_price=max(0.0, theoretical_price),
@@ -479,6 +506,8 @@ class MonteCarloModel:
                 implied_volatility=volatility,
                 standard_error=standard_error,
                 confidence_interval=confidence_interval,
+                capsule_id=capsule.capsule_id if capsule else None,
+                replay_capsule=capsule,
             )
         except Exception as exc:  # pragma: no cover
             LOGGER.exception("Monte Carlo pricing failed")
@@ -525,7 +554,6 @@ def _build_design_matrix(
     basis: Sequence[Callable[[np.ndarray], np.ndarray]], values: np.ndarray
 ) -> np.ndarray:
     """Evaluate the provided basis functions and build the design matrix."""
-
     columns: List[np.ndarray] = []
     for function in basis:
         evaluated = function(values)
@@ -537,10 +565,8 @@ def _build_design_matrix(
 
 def _information_criteria(rss: float, n: int, k: int) -> Tuple[float, float]:
     """Compute the AIC and BIC for a linear regression fit."""
-
     if n <= k or n == 0:
         return float("inf"), float("inf")
-
     variance = max(rss / n, 1e-16)
     log_likelihood = -0.5 * n * (math.log(2.0 * math.pi) + math.log(variance) + 1.0)
     aic = 2.0 * k - 2.0 * log_likelihood
@@ -550,7 +576,6 @@ def _information_criteria(rss: float, n: int, k: int) -> Tuple[float, float]:
 
 def _kfold_indices(sample_size: int, folds: int, rng: np.random.Generator) -> List[np.ndarray]:
     """Generate shuffled k-fold indices."""
-
     folds = max(2, min(sample_size, folds))
     indices = np.arange(sample_size)
     rng.shuffle(indices)
@@ -559,7 +584,6 @@ def _kfold_indices(sample_size: int, folds: int, rng: np.random.Generator) -> Li
 
 def _fit_linear_regression(design: np.ndarray, targets: np.ndarray) -> Tuple[np.ndarray, float]:
     """Fit a linear regression returning coefficients and residual sum of squares."""
-
     coefficients, residuals, rank, _ = np.linalg.lstsq(design, targets, rcond=None)
     if residuals.size:
         rss = float(residuals[0])
@@ -629,7 +653,6 @@ class LongstaffSchwartzModel:
         rng: Generator,
     ) -> Tuple[np.ndarray, np.ndarray, float]:
         """Simulate price paths under the risk-neutral measure."""
-
         time_to_expiry = contract.time_to_expiry
         step_count = max(1, int(self.steps))
         dt = time_to_expiry / step_count
@@ -661,7 +684,6 @@ class LongstaffSchwartzModel:
 
     def _intrinsic_value(self, contract: OptionContract, prices: np.ndarray) -> np.ndarray:
         """Return intrinsic values for the provided price vector."""
-
         if contract.option_type is OptionType.CALL:
             return np.maximum(prices - contract.strike_price, 0.0)
         return np.maximum(contract.strike_price - prices, 0.0)
@@ -676,7 +698,6 @@ class LongstaffSchwartzModel:
         rng: np.random.Generator,
     ) -> BasisMetrics:
         """Fit a regression basis computing AIC/BIC and cross-validation RMSE."""
-
         design = _build_design_matrix(basis_functions, features)
         coefficients, rss = _fit_linear_regression(design, targets)
 
@@ -724,7 +745,6 @@ class LongstaffSchwartzModel:
         seed_sequence: Optional[SeedSequence] = None,
     ) -> LSMCAnalysis:
         """Run the Longstaff-Schwartz algorithm returning diagnostics."""
-
         if contract.exercise_style is not ExerciseStyle.AMERICAN:
             raise ValueError("Longstaff-Schwartz model requires an American option contract")
 
@@ -769,12 +789,7 @@ class LongstaffSchwartzModel:
                 for name, basis_functions in basis_factories.items():
                     try:
                         metrics = self._evaluate_basis(
-                            name,
-                            basis_functions,
-                            features,
-                            targets,
-                            self.cv_folds,
-                            diagnostic_rng,
+                            name, basis_functions, features, targets, self.cv_folds, diagnostic_rng
                         )
                     except np.linalg.LinAlgError:
                         continue
@@ -793,7 +808,6 @@ class LongstaffSchwartzModel:
                     if valid_bases:
                         valid_bases.sort(key=lambda m: (m.cv_rmse, m.bic))
                         selected = valid_bases[0]
-
             else:
                 basis_diagnostics.append([])
 
@@ -874,11 +888,55 @@ class LongstaffSchwartzModel:
         seed_sequence: Optional[SeedSequence] = None,
     ) -> PricingResult:
         """Return a :class:`PricingResult` for the LSMC model."""
-
         analysis = self.price_with_diagnostics(
-            contract,
-            market_data,
-            volatility,
-            seed_sequence=seed_sequence,
+            contract, market_data, volatility, seed_sequence=seed_sequence
         )
         return analysis.pricing_result
+
+
+def replay_pricing_capsule(capsule: ReplayCapsule) -> PricingResult:
+    """Re-run a pricing request described by ``capsule``."""
+    model_info = capsule.payload.get("model", {})
+    request_info = capsule.payload.get("request", {})
+    model_name = model_info.get("name")
+    config = model_info.get("config", {})
+
+    contract_info = request_info.get("contract") or {}
+    market_info = request_info.get("market_data") or {}
+    volatility = float(request_info.get("volatility", 0.0))
+
+    try:
+        contract = OptionContract(
+            symbol=str(contract_info.get("symbol", "")),
+            strike_price=float(contract_info.get("strike_price", 0.0)),
+            time_to_expiry=float(contract_info.get("time_to_expiry", 0.0)),
+            option_type=OptionType(contract_info.get("option_type", OptionType.CALL.value)),
+            exercise_style=ExerciseStyle(
+                contract_info.get("exercise_style", ExerciseStyle.EUROPEAN.value)
+            ),
+            contract_id=contract_info.get("contract_id"),
+        )
+    except Exception as exc:
+        raise ValueError("Invalid contract parameters in replay capsule") from exc
+
+    try:
+        market = MarketData(
+            spot_price=float(market_info.get("spot_price", 0.0)),
+            risk_free_rate=float(market_info.get("risk_free_rate", 0.0)),
+            dividend_yield=float(market_info.get("dividend_yield", 0.0)),
+        )
+    except Exception as exc:
+        raise ValueError("Invalid market data in replay capsule") from exc
+
+    seed_sequence = capsule.resolve_seed_sequence()
+
+    if model_name == "monte_carlo":
+        model = MonteCarloModel(
+            paths=int(config.get("paths", MonteCarloModel.paths)),
+            antithetic=bool(config.get("antithetic", MonteCarloModel.antithetic)),
+        )
+        return model.calculate_price(
+            contract, market, volatility, seed_sequence=seed_sequence
+        )
+
+    raise ValueError(f"Replay is not supported for model '{model_name}'")

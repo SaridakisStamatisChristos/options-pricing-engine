@@ -9,6 +9,7 @@ from options_engine.core.pricing_models import (
     BinomialModel,
     LongstaffSchwartzModel,
     MonteCarloModel,
+    replay_pricing_capsule,
 )
 
 
@@ -79,6 +80,36 @@ def test_monte_carlo_handles_small_antithetic_path_counts():
     assert result.confidence_interval is not None
     lower, upper = result.confidence_interval
     assert lower <= upper
+
+
+def test_monte_carlo_capsule_replay_is_bitwise_stable() -> None:
+    seed = SeedSequence(1234)
+    model = MonteCarloModel(paths=4096, antithetic=True)
+    contract = OptionContract(
+        symbol="MC_DET",
+        strike_price=105.0,
+        time_to_expiry=0.75,
+        option_type=OptionType.PUT,
+    )
+    market = MarketData(spot_price=101.0, risk_free_rate=0.015, dividend_yield=0.002)
+
+    result = model.calculate_price(contract, market, 0.22, seed_sequence=seed)
+    assert result.capsule_id is not None
+    assert result.replay_capsule is not None
+
+    replayed = replay_pricing_capsule(result.replay_capsule)
+
+    assert replayed.capsule_id == result.capsule_id
+    assert replayed.theoretical_price == result.theoretical_price
+    assert replayed.delta == result.delta
+    assert replayed.gamma == result.gamma
+    assert replayed.vega == result.vega
+
+    repeat = model.calculate_price(contract, market, 0.22, seed_sequence=SeedSequence(1234))
+    assert repeat.theoretical_price == result.theoretical_price
+    assert repeat.delta == result.delta
+    assert repeat.gamma == result.gamma
+    assert repeat.vega == result.vega
 
 
 def test_european_call_put_parity_holds() -> None:
