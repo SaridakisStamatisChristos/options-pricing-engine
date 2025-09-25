@@ -361,6 +361,196 @@ def _thread_local_generator(seed_sequence: Optional[SeedSequence] = None) -> Gen
     return generator
 
 
+def _apply_pathwise_control_variates(
+    discounted_payoffs: np.ndarray,
+    terminal_prices: np.ndarray,
+    *,
+    contract: OptionContract,
+    market_data: MarketData,
+    volatility: float,
+) -> Tuple[np.ndarray, dict[str, float | bool | None]]:
+    """Return control-variate adjusted payoffs with diagnostics."""
+
+    adjusted = np.asarray(discounted_payoffs, dtype=float)
+    terminal = np.asarray(terminal_prices, dtype=float)
+    sample_size = adjusted.size
+
+    report: dict[str, float | bool | None]
+
+    if sample_size <= 1:
+        variance = float(np.var(adjusted, ddof=0))
+        report = {
+            "cv_used": False,
+            "rho": None,
+            "beta": None,
+            "raw_var": variance,
+            "residual_var": variance,
+        }
+        return adjusted, report
+
+    y = adjusted
+    centered_y = y - float(np.mean(y))
+    raw_var = float(np.dot(centered_y, centered_y) / (sample_size - 1))
+    if raw_var < 1e-18:
+        report = {
+            "cv_used": False,
+            "rho": None,
+            "beta": None,
+            "raw_var": raw_var,
+            "residual_var": raw_var,
+        }
+        return adjusted, report
+
+    time_to_expiry = contract.time_to_expiry
+    drift = market_data.risk_free_rate - market_data.dividend_yield
+    expected_c1 = market_data.spot_price * math.exp(drift * time_to_expiry)
+    expected_c2 = (market_data.spot_price**2) * math.exp(
+        (2.0 * drift + volatility**2) * time_to_expiry
+    )
+    expected_c3 = math.log(max(market_data.spot_price, 1e-12)) + (
+        drift - 0.5 * volatility**2
+    ) * time_to_expiry
+
+    discount_factor = math.exp(-market_data.risk_free_rate * time_to_expiry)
+    log_term = np.log(np.maximum(terminal, 1e-12))
+
+    controls_list = [
+        terminal,
+        terminal**2,
+        log_term,
+    ]
+    expected_list = [expected_c1, expected_c2, expected_c3]
+
+    if time_to_expiry > 0.0 and volatility > 0.0:
+        sigma_sqrt_t = volatility * math.sqrt(time_to_expiry)
+        log_moneyness = math.log(max(market_data.spot_price, 1e-12) / max(contract.strike_price, 1e-12))
+        numerator = log_moneyness + (
+            market_data.risk_free_rate - market_data.dividend_yield + 0.5 * volatility**2
+        ) * time_to_expiry
+        d1 = numerator / sigma_sqrt_t
+        d2 = d1 - sigma_sqrt_t
+    else:
+        intrinsic = math.log(max(market_data.spot_price, 1e-12) / max(contract.strike_price, 1e-12))
+        d1 = math.copysign(float("inf"), intrinsic)
+        d2 = d1
+
+    if sample_size >= 16_000:
+        if contract.option_type is OptionType.CALL:
+            indicator = (terminal > contract.strike_price).astype(float)
+            expected_indicator = discount_factor * contract.strike_price * norm.cdf(d2)
+            expected_terminal_indicator = (
+                market_data.spot_price * math.exp(-market_data.dividend_yield * time_to_expiry) * norm.cdf(d1)
+            )
+        else:
+            indicator = (terminal < contract.strike_price).astype(float)
+            expected_indicator = discount_factor * contract.strike_price * norm.cdf(-d2)
+            expected_terminal_indicator = (
+                market_data.spot_price * math.exp(-market_data.dividend_yield * time_to_expiry) * norm.cdf(-d1)
+            )
+
+        controls_list.append(discount_factor * terminal * indicator)
+        controls_list.append(discount_factor * contract.strike_price * indicator)
+        expected_list.append(expected_terminal_indicator)
+        expected_list.append(expected_indicator)
+
+    controls = np.column_stack(controls_list)
+    expected_controls = np.array(expected_list, dtype=float)
+    control_centered = controls - expected_controls
+
+    def _single_control() -> Tuple[np.ndarray, dict[str, float | bool | None]]:
+        control = terminal
+        centered_control = control - float(np.mean(control))
+        denom = float(np.dot(centered_control, centered_control) / (sample_size - 1))
+        report_single: dict[str, float | bool | None] = {
+            "cv_used": False,
+            "rho": None,
+            "beta": None,
+            "raw_var": raw_var,
+            "residual_var": raw_var,
+        }
+        if denom < 1e-12:
+            return adjusted, report_single
+        cov = float(np.dot(centered_y, centered_control) / (sample_size - 1))
+        beta = cov / denom
+        rho_single = cov / math.sqrt(max(denom * raw_var, 1e-24))
+        report_single["rho"] = rho_single
+        report_single["beta"] = (float(beta),)
+        if abs(rho_single) < 0.5 or abs(beta) > 50.0:
+            return adjusted, report_single
+        adjusted_single = y - beta * (control - expected_c1)
+        residual_centered_single = adjusted_single - float(np.mean(adjusted_single))
+        residual_var_single = float(
+            np.dot(residual_centered_single, residual_centered_single) / (sample_size - 1)
+        )
+        report_single.update(
+            {
+                "cv_used": True,
+                "residual_var": residual_var_single,
+            }
+        )
+        return adjusted_single, report_single
+
+    cov_matrix = control_centered.T @ control_centered / (sample_size - 1)
+    variances = np.diag(cov_matrix)
+    if np.any(variances < 1e-12):
+        return _single_control()
+
+    scales = np.sqrt(np.maximum(variances, 1e-18))
+    normalized_controls = control_centered / scales
+    cov_vector = normalized_controls.T @ centered_y / (sample_size - 1)
+    scaled_cov = normalized_controls.T @ normalized_controls / (sample_size - 1)
+
+    try:
+        beta_scaled = np.linalg.solve(scaled_cov, cov_vector)
+    except np.linalg.LinAlgError:
+        return _single_control()
+
+    if not np.all(np.isfinite(beta_scaled)):
+        return _single_control()
+
+    beta_vector = beta_scaled / scales
+
+    if np.any(np.abs(beta_vector) > 50.0):
+        return _single_control()
+
+    correlations: list[tuple[float, float, float, int]] = []
+    for index in range(control_centered.shape[1]):
+        column = control_centered[:, index]
+        variance = float(np.dot(column, column) / (sample_size - 1))
+        if variance < 1e-12:
+            continue
+        covariance = float(np.dot(centered_y, column) / (sample_size - 1))
+        correlation = covariance / math.sqrt(max(variance * raw_var, 1e-24))
+        correlations.append((abs(correlation), correlation, variance, index))
+
+    if not correlations:
+        return _single_control()
+
+    correlations.sort(reverse=True)
+    best_abs, rho, primary_var, primary_index = correlations[0]
+    if best_abs < 0.5:
+        return _single_control()
+
+    control_combo = control_centered @ beta_vector
+    combo_var = float(np.dot(control_combo, control_combo) / (sample_size - 1))
+    if combo_var < 1e-18:
+        return _single_control()
+
+    adjusted = y - control_combo
+    residual_centered = adjusted - float(np.mean(adjusted))
+    residual_var = float(np.dot(residual_centered, residual_centered) / (sample_size - 1))
+
+    report = {
+        "cv_used": True,
+        "rho": rho,
+        "beta": tuple(float(value) for value in beta_vector.tolist()),
+        "raw_var": raw_var,
+        "residual_var": residual_var,
+    }
+
+    return adjusted, report
+
+
 @dataclass(slots=True)
 class MonteCarloModel:
     """Monte Carlo pricer supporting antithetic variates."""
@@ -426,7 +616,14 @@ class MonteCarloModel:
 
             discount_factor = math.exp(-market_data.risk_free_rate * contract.time_to_expiry)
             discounted_payoffs = discount_factor * payoff
-            theoretical_price = float(np.mean(discounted_payoffs))
+            adjusted_payoffs, cv_report = _apply_pathwise_control_variates(
+                discounted_payoffs,
+                terminal_prices,
+                contract=contract,
+                market_data=market_data,
+                volatility=volatility,
+            )
+            theoretical_price = float(np.mean(adjusted_payoffs))
 
             sqrt_time = time_sqrt
             if contract.option_type is OptionType.CALL:
@@ -469,7 +666,7 @@ class MonteCarloModel:
             standard_error: Optional[float] = None
             confidence_interval: Optional[Tuple[float, float]] = None
             if simulation_paths > 1:
-                sample_std = float(np.std(discounted_payoffs, ddof=1))
+                sample_std = float(np.std(adjusted_payoffs, ddof=1))
                 standard_error = sample_std / math.sqrt(simulation_paths)
                 z_score = norm.ppf(0.975)  # 95% CI
                 half_width = z_score * standard_error
@@ -495,7 +692,7 @@ class MonteCarloModel:
             except ValueError:
                 capsule = None
 
-            return PricingResult(
+            result = PricingResult(
                 contract_id=contract.contract_id,
                 theoretical_price=max(0.0, theoretical_price),
                 delta=delta_estimate,
@@ -508,7 +705,9 @@ class MonteCarloModel:
                 confidence_interval=confidence_interval,
                 capsule_id=capsule.capsule_id if capsule else None,
                 replay_capsule=capsule,
+                control_variate_report=cv_report,
             )
+            return result
         except Exception as exc:  # pragma: no cover
             LOGGER.exception("Monte Carlo pricing failed")
             elapsed_ms = (time.perf_counter() - start) * 1000.0

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Optional, Tuple, TYPE_CHECKING
+from typing import Dict, Optional, Tuple, TYPE_CHECKING
 
 
 if TYPE_CHECKING:
@@ -91,3 +91,4 @@ class PricingResult:
     confidence_interval: Optional[Tuple[float, float]] = None
     capsule_id: Optional[str] = None
     replay_capsule: Optional["ReplayCapsule"] = None
+    control_variate_report: Optional[Dict[str, float | bool | None]] = None
