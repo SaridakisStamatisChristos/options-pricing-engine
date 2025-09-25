@@ -25,9 +25,9 @@ operational guardrails.
    export OIDC_JWKS_URL="https://auth.local/.well-known/jwks.json"
    ```
 
-   For local development you may optionally set `OPE_JWT_SECRET` to use the legacy symmetric
-   signer while no OIDC provider is available. The variable is ignored – and forbidden – when
-   `OPE_ENVIRONMENT=production`.
+   For local development you may optionally set `OPE_JWT_SECRET` (and rotation values in
+   `OPE_JWT_ADDITIONAL_SECRETS`) to use the built-in HMAC fallback while no OIDC provider is
+   available. The variables are ignored – and forbidden – when `OPE_ENVIRONMENT=production`.
 
 3. **Launch the API**
 
@@ -81,6 +81,9 @@ defaults in non-production environments but must be explicitly configured in pro
   `scope` or `scp` claim is parsed as a space-delimited list.
 * JWKS documents are cached for 5 minutes. During key rotation both the previous and current
   keys remain valid automatically.
+* In non-production environments the API can validate tokens signed with `OPE_JWT_SECRET` when an
+  OIDC provider is unavailable. Multiple secrets may be provided to smooth rotations. The fallback
+  is disabled in production.
 * API endpoints attach strict transport security, request IDs and JSON structured logs for every
   call. Headers such as `X-Content-Type-Options` and `Strict-Transport-Security` are enforced by
   middleware.
