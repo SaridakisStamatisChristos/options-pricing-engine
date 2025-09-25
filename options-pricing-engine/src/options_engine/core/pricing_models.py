@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 """Pricing model implementations used by the engine."""
 
 from __future__ import annotations

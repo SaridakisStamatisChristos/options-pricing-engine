@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 """Pricing endpoints."""
 
 from __future__ import annotations

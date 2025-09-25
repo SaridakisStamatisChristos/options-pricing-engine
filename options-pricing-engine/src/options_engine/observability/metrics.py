@@ -62,6 +62,24 @@ MODEL_ERRORS = Counter(
     labelnames=("model",),
 )
 
+AUTH_FAILURES = Counter(
+    "ope_auth_failures_total",
+    "Number of authentication or authorization failures",
+    labelnames=("reason",),
+)
+
+RATE_LIMIT_REJECTIONS = Counter(
+    "ope_rate_limit_rejections_total",
+    "Number of requests rejected due to rate limiting",
+    labelnames=("route",),
+)
+
+PAYLOAD_TOO_LARGE = Counter(
+    "ope_payload_too_large_total",
+    "Number of requests rejected because the payload exceeded limits",
+    labelnames=("route",),
+)
+
 THREADPOOL_QUEUE_DEPTH = Gauge(
     "ope_threadpool_queue_depth",
     "Tasks waiting in the pricing engine queue",
@@ -103,6 +121,12 @@ THREADPOOL_QUEUE_WAIT = Histogram(
 THREADPOOL_REJECTIONS = Counter(
     "ope_threadpool_rejections_total",
     "Number of requests rejected because the pricing engine queue was full",
+    labelnames=("engine",),
+)
+
+THREADPOOL_SATURATION = Counter(
+    "ope_threadpool_saturation_total",
+    "Number of times the pricing engine queue was saturated",
     labelnames=("engine",),
 )
 

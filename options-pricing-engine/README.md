@@ -16,11 +16,18 @@ operational guardrails.
 
 2. **Provide mandatory secrets**
 
-   The service refuses to start without a signing key for JWTs:
+   Configure the OpenID Connect issuer that signs access tokens. The JWKS endpoint can be
+   hosted locally using any static file server or an identity provider in your environment.
 
    ```bash
-   export OPE_JWT_SECRET="$(openssl rand -hex 32)"
+   export OIDC_ISSUER="https://auth.local"
+   export OIDC_AUDIENCE="options-pricing-engine"
+   export OIDC_JWKS_URL="https://auth.local/.well-known/jwks.json"
    ```
+
+   For local development you may optionally set `OPE_JWT_SECRET` to use the legacy symmetric
+   signer while no OIDC provider is available. The variable is ignored – and forbidden – when
+   `OPE_ENVIRONMENT=production`.
 
 3. **Launch the API**
 
@@ -31,7 +38,7 @@ operational guardrails.
 4. **Smoke test**
 
    ```bash
-   curl -H "Authorization: Bearer <token>" \
+   curl -H "Authorization: Bearer ${OIDC_BEARER_TOKEN}" \
         -H "Content-Type: application/json" \
         -d @examples/price_single.json \
         http://localhost:8000/api/v1/pricing/single
@@ -48,11 +55,13 @@ defaults in non-production environments but must be explicitly configured in pro
 | Variable | Description | Default (non-prod) |
 | --- | --- | --- |
 | `OPE_ENVIRONMENT` | Deployment environment label (`development`, `staging`, `production`). | `development` |
-| `OPE_JWT_SECRET` | **Required.** Primary HMAC secret for JWT signing. | – |
-| `OPE_JWT_ADDITIONAL_SECRETS` | Comma-separated list of previous secrets accepted for token rotation. | empty |
-| `OPE_JWT_AUDIENCE` / `OPE_JWT_ISSUER` | Expected JWT audience and issuer claims. | `options-pricing-engine` |
-| `OPE_JWT_EXP_MINUTES` | Access token lifetime. | `30` |
-| `OPE_JWT_LEEWAY_SECONDS` | Clock skew tolerance when validating tokens. | `30` |
+| `OIDC_ISSUER` | **Required in production.** Expected issuer for JWTs. | unset |
+| `OIDC_AUDIENCE` | **Required in production.** Audience claim required on JWTs. | unset |
+| `OIDC_JWKS_URL` | **Required in production.** HTTPS endpoint serving the JWKS document. | unset |
+| `RATE_LIMIT_DEFAULT` | Default SlowAPI rate limit applied to authenticated routes. | `60/minute` |
+| `MAX_BODY_BYTES` | Maximum accepted request payload size. | `1_048_576` |
+| `OPE_JWT_SECRET` | Optional symmetric secret for non-production development only. | unset |
+| `OPE_JWT_ADDITIONAL_SECRETS` | Additional development secrets accepted during rotation. | empty |
 | `OPE_ALLOWED_HOSTS` | Comma-separated host allow-list for the TrustedHost middleware. **Required in production.** | `localhost,127.0.0.1` |
 | `OPE_ALLOWED_ORIGINS` | CORS allow list. | `http://localhost,http://localhost:3000,http://localhost:8000` |
 | `OPE_CORS_ALLOW_CREDENTIALS` | Whether CORS responses include credentials. | `true` |
@@ -66,19 +75,35 @@ defaults in non-production environments but must be explicitly configured in pro
 
 ## Authentication and security
 
-* JWTs must be issued using the configured `OPE_JWT_SECRET`; there is no insecure fallback.
-* Tokens include `exp`, `nbf`, `iat`, `aud`, `iss` and `jti` claims by default. You can rotate
-  secrets without downtime by setting `OPE_JWT_ADDITIONAL_SECRETS` to the previous keys.
-* API endpoints attach strict transport and anti-MIME-sniffing headers via middleware.
+* Access tokens are validated against the configured OIDC issuer and JWKS. Claims `iss`, `aud`,
+  `exp`, `nbf`, `iat` and `kid` are required with a ±60s clock skew tolerance.
+* Tokens must include the appropriate scopes (`pricing:read`, `market-data:write`, …). The
+  `scope` or `scp` claim is parsed as a space-delimited list.
+* JWKS documents are cached for 5 minutes. During key rotation both the previous and current
+  keys remain valid automatically.
+* API endpoints attach strict transport security, request IDs and JSON structured logs for every
+  call. Headers such as `X-Content-Type-Options` and `Strict-Transport-Security` are enforced by
+  middleware.
 * Trusted hosts and CORS defaults are restrictive. In production you must configure explicit
   allow-lists.
+
+### Example authenticated request
+
+```bash
+TOKEN="$(your_token_issuer_flow)"
+curl -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d @examples/price_single.json \
+     http://localhost:8000/api/v1/pricing/single
+```
 
 ## Deterministic Monte Carlo runs
 
 Monte Carlo simulations can be made reproducible by providing a seed either globally or per
 request:
 
-* `OPE_MONTE_CARLO_SEED` seeds all Monte Carlo runs with independent child sequences.
+* `OPE_MONTE_CARLO_SEED` seeds all Monte Carlo runs with independent child sequences. When
+  debugging stochastic behaviour, pin this in the environment for deterministic responses.
 * Requests may include an optional `seed` field. For batch requests each contract receives a
   deterministic child seed ensuring results are stable across retries.
 
@@ -95,7 +120,9 @@ for auditability.
 ## Observability
 
 * `/metrics` exposes Prometheus counters, gauges and histograms for request rates, latency,
-  error counts, model timings and thread pool pressure.
+  rate-limit or payload rejections, authentication failures, model timings and thread pool
+  pressure. Look for metrics prefixed with `ope_request_latency_seconds`, `ope_rate_limit_…` and
+  `ope_auth_failures_…`.
 * Alerting starter rules live under `monitoring/prometheus/rules.yml` with SLOs for error rate,
   latency and thread pool saturation.
 

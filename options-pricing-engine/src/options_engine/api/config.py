@@ -92,11 +92,6 @@ class Settings:
     allowed_hosts: Tuple[str, ...]
     allowed_origins: Tuple[str, ...]
     cors_allow_credentials: bool
-    jwt_secrets: Tuple[str, ...]
-    jwt_audience: str
-    jwt_issuer: str
-    jwt_expire_minutes: int
-    jwt_leeway_seconds: int
     threadpool_workers: int
     threadpool_queue_size: int
     threadpool_queue_timeout_seconds: float
@@ -104,6 +99,12 @@ class Settings:
     max_pricing_contracts: int
     max_risk_contracts: int
     monte_carlo_seed: int | None
+    rate_limit_default: str
+    max_body_bytes: int
+    oidc_issuer: str | None
+    oidc_audience: str | None
+    oidc_jwks_url: str | None
+    dev_jwt_secrets: Tuple[str, ...]
 
     @property
     def is_production(self) -> bool:
@@ -132,19 +133,31 @@ def get_settings() -> Settings:
             "http://localhost:8000",
         )
 
-    primary_secret = _get_env("OPE_JWT_SECRET", required=True)
-    assert primary_secret is not None  # narrow type for mypy
+    dev_primary_secret = _get_env("OPE_JWT_SECRET")
     rotation_secrets = _split_csv(_get_env("OPE_JWT_ADDITIONAL_SECRETS"))
-    jwt_secrets = (primary_secret, *rotation_secrets)
+    dev_jwt_secrets = tuple(secret for secret in (dev_primary_secret, *rotation_secrets) if secret)
 
-    jwt_audience = _get_env("OPE_JWT_AUDIENCE", default="options-pricing-engine") or (
-        "options-pricing-engine"
-    )
-    jwt_issuer = _get_env("OPE_JWT_ISSUER", default="options-pricing-engine") or (
-        "options-pricing-engine"
-    )
-    jwt_expire_minutes = _as_int("OPE_JWT_EXP_MINUTES", default=30, minimum=1)
-    jwt_leeway_seconds = _as_int("OPE_JWT_LEEWAY_SECONDS", default=30, minimum=0)
+    oidc_issuer = _get_env("OIDC_ISSUER")
+    oidc_audience = _get_env("OIDC_AUDIENCE")
+    oidc_jwks_url = _get_env("OIDC_JWKS_URL")
+
+    if environment == "production":
+        missing = [
+            name
+            for name, value in (
+                ("OIDC_ISSUER", oidc_issuer),
+                ("OIDC_AUDIENCE", oidc_audience),
+                ("OIDC_JWKS_URL", oidc_jwks_url),
+            )
+            if not value
+        ]
+        if missing:
+            raise RuntimeError(
+                "Production deployment requires OIDC configuration: "
+                + ", ".join(sorted(missing))
+            )
+        if dev_primary_secret:
+            raise RuntimeError("OPE_JWT_SECRET must not be set when OPE_ENVIRONMENT=production")
 
     threadpool_workers = _as_int("OPE_THREADS", default=8, minimum=1)
     threadpool_queue_size = _as_int("OPE_THREAD_QUEUE_MAX", default=32, minimum=0)
@@ -167,16 +180,14 @@ def get_settings() -> Settings:
         except ValueError as exc:  # pragma: no cover - defensive guard
             raise RuntimeError("OPE_MONTE_CARLO_SEED must be an integer") from exc
 
+    rate_limit_default = _get_env("RATE_LIMIT_DEFAULT", default="60/minute") or "60/minute"
+    max_body_bytes = _as_int("MAX_BODY_BYTES", default=1_048_576, minimum=1_024)
+
     return Settings(
         environment=environment,
         allowed_hosts=allowed_hosts,
         allowed_origins=allowed_origins,
         cors_allow_credentials=_as_bool("OPE_CORS_ALLOW_CREDENTIALS", default=True),
-        jwt_secrets=jwt_secrets,
-        jwt_audience=jwt_audience,
-        jwt_issuer=jwt_issuer,
-        jwt_expire_minutes=jwt_expire_minutes,
-        jwt_leeway_seconds=jwt_leeway_seconds,
         threadpool_workers=threadpool_workers,
         threadpool_queue_size=threadpool_queue_size,
         threadpool_queue_timeout_seconds=threadpool_queue_timeout_seconds,
@@ -184,5 +195,11 @@ def get_settings() -> Settings:
         max_pricing_contracts=max_contracts,
         max_risk_contracts=max_risk_contracts,
         monte_carlo_seed=monte_carlo_seed,
+        rate_limit_default=rate_limit_default,
+        max_body_bytes=max_body_bytes,
+        oidc_issuer=oidc_issuer,
+        oidc_audience=oidc_audience,
+        oidc_jwks_url=oidc_jwks_url,
+        dev_jwt_secrets=dev_jwt_secrets,
     )
 
