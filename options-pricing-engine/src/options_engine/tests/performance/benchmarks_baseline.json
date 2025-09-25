@@ -15,6 +15,11 @@
     "p99_latency_ms": 1.799404,
     "median_ci_half_width": 0.049623,
     "median_ci_bps": 113.268816,
-    "paths_used": 16384
+    "paths_used": 16384,
+    "median_ci_bps_bucket_A": 0.0,
+    "median_ci_bps_bucket_B": 0.0,
+    "median_ci_abs_bucket_C": 0.0,
+    "bucket_counts": {"A": 0, "B": 0, "C": 0},
+    "median_ci_bps_all_cells": 0.0
   }
 }

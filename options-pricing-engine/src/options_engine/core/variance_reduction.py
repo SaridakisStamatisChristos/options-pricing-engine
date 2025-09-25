@@ -13,7 +13,11 @@ from scipy import stats
 from scipy.stats import norm, qmc
 
 from .models import MarketData, OptionContract, OptionType, PricingResult
-from .pricing_models import BlackScholesModel, MonteCarloModel
+from .pricing_models import (
+    BlackScholesModel,
+    MonteCarloModel,
+    _apply_pathwise_control_variates,
+)
 from ..utils.validation import validate_pricing_parameters
 
 
@@ -267,19 +271,14 @@ class VarianceReductionToolkit:
         discounted_payoffs = discount_factor * payoff
 
         adjusted_payoffs = discounted_payoffs
+        cv_report: dict[str, float | bool | None] | None = None
         if strategy.control_variate:
-            bs_result = self.black_scholes_model.calculate_price(contract, market_data, volatility)
-            expected_terminal = (
-                market_data.spot_price
-                * math.exp(
-                    (market_data.risk_free_rate - market_data.dividend_yield)
-                    * contract.time_to_expiry
-                )
-            )
-            control = discount_factor * terminal_prices
-            delta = bs_result.delta or 0.0
-            adjusted_payoffs = discounted_payoffs - delta * (
-                control - discount_factor * expected_terminal
+            adjusted_payoffs, cv_report = _apply_pathwise_control_variates(
+                discounted_payoffs,
+                terminal_prices,
+                contract=contract,
+                market_data=market_data,
+                volatility=volatility,
             )
 
         price = float(np.mean(adjusted_payoffs))
@@ -330,6 +329,7 @@ class VarianceReductionToolkit:
             implied_volatility=volatility,
             standard_error=standard_error,
             confidence_interval=confidence_interval,
+            control_variate_report=cv_report,
         )
 
         return _SimulationOutcome(
