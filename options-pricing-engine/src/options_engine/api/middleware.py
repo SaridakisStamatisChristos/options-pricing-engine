@@ -93,6 +93,46 @@ class BodySizeLimitMiddleware(BaseHTTPMiddleware):
         return False
 
 
+class RateLimitResponseMiddleware(BaseHTTPMiddleware):
+    """Normalise rate-limit responses to include the standard error payload."""
+
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        response = await call_next(request)
+        if response.status_code != status.HTTP_429_TOO_MANY_REQUESTS:
+            return response
+
+        body_bytes = b""
+        raw_body = getattr(response, "body", b"")
+        if isinstance(raw_body, (bytes, bytearray)):
+            body_bytes = bytes(raw_body)
+
+        detail: str | None = None
+        if body_bytes:
+            try:
+                payload = json.loads(body_bytes.decode())
+            except ValueError:
+                payload = {}
+            if isinstance(payload, dict):
+                detail = str(payload.get("detail") or payload.get("error")) if payload else None
+
+        if not detail or detail == "None":
+            detail = "Rate limit exceeded"
+
+        normalized = JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={"detail": detail},
+        )
+
+        for key, value in response.headers.items():
+            if key.lower() == "content-length":
+                continue
+            normalized.headers.setdefault(key, value)
+
+        return normalized
+
+
 def log_request_completion(
     *,
     request: Request,
