@@ -4,29 +4,47 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Callable, Mapping
+from typing import Callable, Mapping, Union
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
 
 from ..observability.metrics import AUTH_FAILURES
-from ..security import OIDCAuthenticator, OIDCClaims, JWKSCache
+from ..security import (
+    DevelopmentJWTAuthenticator,
+    OIDCAuthenticator,
+    OIDCClaims,
+    JWKSCache,
+)
 from .config import get_settings
 
 security = HTTPBearer(auto_error=False)
 
 
+Authenticator = Union[OIDCAuthenticator, DevelopmentJWTAuthenticator]
+
+
 @lru_cache(maxsize=1)
-def _get_authenticator() -> OIDCAuthenticator:
+def _get_authenticator() -> Authenticator:
     settings = get_settings()
-    if not (settings.oidc_issuer and settings.oidc_audience and settings.oidc_jwks_url):
-        raise RuntimeError("OIDC configuration must be provided via environment variables")
-    cache = JWKSCache(settings.oidc_jwks_url)
-    return OIDCAuthenticator(
-        issuer=settings.oidc_issuer,
-        audience=settings.oidc_audience,
-        jwks_cache=cache,
+    if settings.oidc_issuer and settings.oidc_audience and settings.oidc_jwks_url:
+        cache = JWKSCache(settings.oidc_jwks_url)
+        return OIDCAuthenticator(
+            issuer=settings.oidc_issuer,
+            audience=settings.oidc_audience,
+            jwks_cache=cache,
+        )
+
+    if settings.dev_jwt_secrets:
+        return DevelopmentJWTAuthenticator(
+            secrets=settings.dev_jwt_secrets,
+            issuer=settings.oidc_issuer,
+            audience=settings.oidc_audience,
+        )
+
+    raise RuntimeError(
+        "Authentication requires OIDC_ISSUER/OIDC_AUDIENCE/OIDC_JWKS_URL or OPE_JWT_SECRET"
     )
 
 
