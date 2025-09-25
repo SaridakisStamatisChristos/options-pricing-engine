@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterable, Mapping, MutableMapping, Optional
+from typing import Any, Callable, Dict, Iterable, Mapping, MutableMapping
 
 try:  # pragma: no cover - httpx optional in offline tests
     import httpx
@@ -99,14 +99,6 @@ class JWKSCache:
         if now >= self._next_refresh or not self._current_keys:
             self._refresh_locked()
 
-    def _get_from_previous_locked(self, kid: str) -> Optional[Mapping[str, Any]]:
-        value = self._previous_keys.get(kid)
-        if value is not None:
-            return value
-        # Force a refresh in case a new key was introduced after rotation
-        self._refresh_locked()
-        return self._previous_keys.get(kid)
-
     def get_key(self, kid: str) -> Mapping[str, Any]:
         """Return the signing key for the supplied key identifier."""
 
@@ -118,14 +110,28 @@ class JWKSCache:
             key = self._current_keys.get(kid)
             if key is not None:
                 return key
-            previous = self._get_from_previous_locked(kid)
-            if previous is not None:
-                return previous
+
+            # Key not found; refresh to pick up rotations, then check CURRENT first.
+            self._refresh_locked()
+            key = self._current_keys.get(kid)
+            if key is not None:
+                return key
+
+            # During rollouts, some providers serve both old/new sets; try PREVIOUS as a grace.
+            key = self._previous_keys.get(kid)
+            if key is not None:
+                return key
+
         raise KeyError(f"Unknown signing key: {kid}")
 
 
 class OIDCAuthenticator:
     """Validate JWT access tokens issued by an OpenID Connect provider."""
+
+    # Conservative default allow-list; reduce if you know the exact alg.
+    _ALLOWED_ALGS = frozenset(
+        {"RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "HS256", "HS384", "HS512"}
+    )
 
     def __init__(
         self,
@@ -154,33 +160,57 @@ class OIDCAuthenticator:
         kid = header.get("kid")
         if not isinstance(kid, str) or not kid:
             raise JWTError("Token missing 'kid' header")
-        algorithm = header.get("alg")
-        if not isinstance(algorithm, str) or not algorithm:
-            raise JWTError("Token missing 'alg' header")
 
+        # Fetch key by kid, then decide algorithm from the KEY (not untrusted header).
         key = self._jwks_cache.get_key(kid)
+        key_alg = key.get("alg")
+        if not isinstance(key_alg, str) or key_alg not in self._ALLOWED_ALGS:
+            # Some JWKS omit 'alg' per key; default to RS256 if kty is RSA.
+            kty = key.get("kty")
+            if kty == "RSA":
+                key_alg = "RS256"
+            elif kty == "EC":
+                key_alg = "ES256"
+            elif kty == "oct":
+                key_alg = "HS256"
+            else:
+                raise JWTError("Unsupported or unknown key algorithm")
+
+        # jose options: use explicit verify/require flags; pass leeway as a PARAM, not in options.
         options = {
-            "require": ["exp", "iat", "nbf", "iss", "aud", "sub"],
+            "verify_signature": True,
+            "verify_aud": True,
+            "verify_exp": True,
+            "verify_nbf": True,
+            "verify_iat": True,
+            # Require presence of these claims:
+            "require_exp": True,
+            "require_iat": True,
+            "require_nbf": True,
             "leeway": self._clock_skew_seconds,
         }
 
-        try:
-            claims = jwt.decode(
+        def _do_decode() -> Mapping[str, Any]:
+            return jwt.decode(
                 token,
                 key,
-                algorithms=[algorithm],
+                algorithms=[key_alg],
                 audience=self._audience,
                 issuer=self._issuer,
                 options=options,
             )
+
+        try:
+            claims = _do_decode()
         except JWTError:
             # Attempt a forced refresh in case the JWKS rotated between requests.
             self._jwks_cache.reset()
             key = self._jwks_cache.get_key(kid)
+            key_alg2 = key.get("alg") or key_alg
             claims = jwt.decode(
                 token,
                 key,
-                algorithms=[algorithm],
+                algorithms=[key_alg2],
                 audience=self._audience,
                 issuer=self._issuer,
                 options=options,
