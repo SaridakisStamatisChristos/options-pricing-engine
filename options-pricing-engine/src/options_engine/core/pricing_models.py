@@ -15,9 +15,58 @@ from numpy.random import Generator, SeedSequence
 from scipy.stats import norm
 
 from .models import ExerciseStyle, MarketData, OptionContract, OptionType, PricingResult
+from .replay import ReplayCapsule, build_replay_capsule
 from ..utils.validation import validate_pricing_parameters
 
 LOGGER = logging.getLogger(__name__)
+
+SQRT_TWO = math.sqrt(2.0)
+INV_SQRT_TWO_PI = 1.0 / math.sqrt(2.0 * math.pi)
+TAU_MIN = 1e-8
+SIGMA_MIN = 1e-6
+LOG_MONEYNESS_CLAMP = (
+    (1e-6, 8.0),
+    (1e-4, 10.0),
+    (1e-3, 12.0),
+    (1e-2, 14.0),
+    (1e-1, 16.0),
+    (1.0, 18.0),
+    (float("inf"), 20.0),
+)
+
+
+def _norm_pdf(value: float) -> float:
+    return INV_SQRT_TWO_PI * math.exp(-0.5 * value * value)
+
+
+def _norm_cdf(value: float) -> float:
+    return 0.5 * math.erfc(-value / SQRT_TWO)
+
+
+def _log_moneyness_threshold(time_to_expiry: float) -> float:
+    for maturity, clamp in LOG_MONEYNESS_CLAMP:
+        if time_to_expiry <= maturity:
+            return clamp
+    return LOG_MONEYNESS_CLAMP[-1][1]
+
+
+def _contract_payload(contract: OptionContract) -> Dict[str, object]:
+    return {
+        "contract_id": contract.contract_id,
+        "symbol": contract.symbol,
+        "strike_price": contract.strike_price,
+        "time_to_expiry": contract.time_to_expiry,
+        "option_type": contract.option_type.value,
+        "exercise_style": contract.exercise_style.value,
+    }
+
+
+def _market_payload(market_data: MarketData) -> Dict[str, object]:
+    return {
+        "spot_price": market_data.spot_price,
+        "risk_free_rate": market_data.risk_free_rate,
+        "dividend_yield": market_data.dividend_yield,
+    }
 
 
 def _black_scholes_payoff(
@@ -44,43 +93,59 @@ def _black_scholes_greeks(
     rate = market_data.risk_free_rate
     dividend = market_data.dividend_yield
 
-    if time_to_expiry <= 1e-12 or volatility <= 1e-12:
+    if time_to_expiry <= 0.0 or volatility <= 0.0:
         intrinsic = _black_scholes_payoff(contract, spot, strike)
         return intrinsic, 0.0, 0.0, 0.0, 0.0, 0.0
 
+    time_to_expiry = max(time_to_expiry, TAU_MIN)
+    volatility = max(volatility, SIGMA_MIN)
+
     sqrt_t = math.sqrt(time_to_expiry)
-    numerator = math.log(spot / strike) + (rate - dividend + 0.5 * volatility**2) * time_to_expiry
+    discount_dividend = math.exp(-dividend * time_to_expiry)
+    discount_rate = math.exp(-rate * time_to_expiry)
+    parity_anchor = spot * discount_dividend - strike * discount_rate
+
+    log_moneyness = math.log(spot / strike)
+    numerator = log_moneyness + (rate - dividend + 0.5 * volatility**2) * time_to_expiry
     denominator = volatility * sqrt_t
     d1 = numerator / denominator
     d2 = d1 - volatility * sqrt_t
 
-    pdf = norm.pdf(d1)
+    pdf = _norm_pdf(d1)
+    cdf_d1 = _norm_cdf(d1)
+    cdf_d2 = _norm_cdf(d2)
+
+    clamp_threshold = _log_moneyness_threshold(time_to_expiry)
+    if log_moneyness > clamp_threshold:
+        tail_call = strike * discount_rate * _norm_cdf(-d2) - spot * discount_dividend * _norm_cdf(-d1)
+        call_price = parity_anchor + tail_call
+    else:
+        call_price = spot * discount_dividend * cdf_d1 - strike * discount_rate * cdf_d2
+
+    call_delta = discount_dividend * cdf_d1
+    call_gamma = discount_dividend * pdf / (spot * volatility * sqrt_t)
+    call_theta = (
+        -spot * discount_dividend * pdf * volatility / (2.0 * sqrt_t)
+        - dividend * spot * discount_dividend * cdf_d1
+        + rate * strike * discount_rate * cdf_d2
+    ) / 365.0
+    call_vega = spot * discount_dividend * pdf * sqrt_t / 100.0
+    call_rho = strike * discount_rate * time_to_expiry * cdf_d2 / 100.0
 
     if contract.option_type is OptionType.CALL:
-        price = spot * math.exp(-dividend * time_to_expiry) * norm.cdf(d1) - strike * math.exp(
-            -rate * time_to_expiry
-        ) * norm.cdf(d2)
-        delta = math.exp(-dividend * time_to_expiry) * norm.cdf(d1)
-        rho = strike * time_to_expiry * math.exp(-rate * time_to_expiry) * norm.cdf(d2) / 100.0
-        theta = (
-            -spot * pdf * volatility * math.exp(-dividend * time_to_expiry) / (2.0 * sqrt_t)
-            - dividend * spot * math.exp(-dividend * time_to_expiry) * norm.cdf(d1)
-            + rate * strike * math.exp(-rate * time_to_expiry) * norm.cdf(d2)
-        ) / 365.0
+        price = call_price
+        delta = call_delta
+        gamma = call_gamma
+        theta = call_theta
+        vega = call_vega
+        rho = call_rho
     else:
-        price = strike * math.exp(-rate * time_to_expiry) * norm.cdf(-d2) - spot * math.exp(
-            -dividend * time_to_expiry
-        ) * norm.cdf(-d1)
-        delta = -math.exp(-dividend * time_to_expiry) * norm.cdf(-d1)
-        rho = -strike * time_to_expiry * math.exp(-rate * time_to_expiry) * norm.cdf(-d2) / 100.0
-        theta = (
-            -spot * pdf * volatility * math.exp(-dividend * time_to_expiry) / (2.0 * sqrt_t)
-            + dividend * spot * math.exp(-dividend * time_to_expiry) * norm.cdf(-d1)
-            - rate * strike * math.exp(-rate * time_to_expiry) * norm.cdf(-d2)
-        ) / 365.0
-
-    gamma = math.exp(-dividend * time_to_expiry) * pdf / (spot * volatility * sqrt_t)
-    vega = spot * math.exp(-dividend * time_to_expiry) * pdf * sqrt_t / 100.0
+        price = call_price - parity_anchor
+        delta = call_delta - discount_dividend
+        gamma = call_gamma
+        theta = call_theta + (dividend * spot * discount_dividend - rate * strike * discount_rate) / 365.0
+        vega = call_vega
+        rho = call_rho - time_to_expiry * strike * discount_rate / 100.0
 
     return price, delta, gamma, theta, vega, rho
 
@@ -281,14 +346,15 @@ _THREAD_LOCAL_RNG = threading.local()
 
 
 def _thread_local_generator(seed_sequence: Optional[SeedSequence] = None) -> Generator:
-    """Return a thread-local numpy Generator, creating one if needed."""
+    """Return a numpy Generator with deterministic seeding when requested."""
+
+    if seed_sequence is not None:
+        return np.random.default_rng(seed_sequence)
 
     generator: Optional[Generator] = getattr(_THREAD_LOCAL_RNG, "generator", None)
-    current_seed = getattr(_THREAD_LOCAL_RNG, "seed_sequence", None)
-    if generator is None or current_seed is not seed_sequence:
-        generator = np.random.default_rng(seed_sequence)
+    if generator is None:
+        generator = np.random.default_rng()
         _THREAD_LOCAL_RNG.generator = generator
-        _THREAD_LOCAL_RNG.seed_sequence = seed_sequence
     return generator
 
 
@@ -423,6 +489,25 @@ class MonteCarloModel:
                 )
 
             elapsed_ms = (time.perf_counter() - start) * 1000.0
+
+            capsule: Optional[ReplayCapsule] = None
+            try:
+                capsule = build_replay_capsule(
+                    seed_sequence=sequence,
+                    model_name="monte_carlo",
+                    model_config={
+                        "paths": simulation_paths,
+                        "antithetic": self.antithetic,
+                    },
+                    request={
+                        "contract": _contract_payload(contract),
+                        "market_data": _market_payload(market_data),
+                        "volatility": volatility,
+                    },
+                )
+            except ValueError:
+                capsule = None
+
             return PricingResult(
                 contract_id=contract.contract_id,
                 theoretical_price=max(0.0, theoretical_price),
@@ -434,6 +519,8 @@ class MonteCarloModel:
                 implied_volatility=volatility,
                 standard_error=standard_error,
                 confidence_interval=confidence_interval,
+                capsule_id=capsule.capsule_id if capsule else None,
+                replay_capsule=capsule,
             )
         except Exception as exc:  # pragma: no cover
             LOGGER.exception("Monte Carlo pricing failed")
@@ -837,3 +924,55 @@ class LongstaffSchwartzModel:
             seed_sequence=seed_sequence,
         )
         return analysis.pricing_result
+
+
+def replay_pricing_capsule(capsule: ReplayCapsule) -> PricingResult:
+    """Re-run a pricing request described by ``capsule``."""
+
+    model_info = capsule.payload.get("model", {})
+    request_info = capsule.payload.get("request", {})
+    model_name = model_info.get("name")
+    config = model_info.get("config", {})
+
+    contract_info = request_info.get("contract") or {}
+    market_info = request_info.get("market_data") or {}
+    volatility = float(request_info.get("volatility", 0.0))
+
+    try:
+        contract = OptionContract(
+            symbol=str(contract_info.get("symbol", "")),
+            strike_price=float(contract_info.get("strike_price", 0.0)),
+            time_to_expiry=float(contract_info.get("time_to_expiry", 0.0)),
+            option_type=OptionType(contract_info.get("option_type", OptionType.CALL.value)),
+            exercise_style=ExerciseStyle(
+                contract_info.get("exercise_style", ExerciseStyle.EUROPEAN.value)
+            ),
+            contract_id=contract_info.get("contract_id"),
+        )
+    except Exception as exc:
+        raise ValueError("Invalid contract parameters in replay capsule") from exc
+
+    try:
+        market = MarketData(
+            spot_price=float(market_info.get("spot_price", 0.0)),
+            risk_free_rate=float(market_info.get("risk_free_rate", 0.0)),
+            dividend_yield=float(market_info.get("dividend_yield", 0.0)),
+        )
+    except Exception as exc:
+        raise ValueError("Invalid market data in replay capsule") from exc
+
+    seed_sequence = capsule.resolve_seed_sequence()
+
+    if model_name == "monte_carlo":
+        model = MonteCarloModel(
+            paths=int(config.get("paths", MonteCarloModel.paths)),
+            antithetic=bool(config.get("antithetic", MonteCarloModel.antithetic)),
+        )
+        return model.calculate_price(
+            contract,
+            market,
+            volatility,
+            seed_sequence=seed_sequence,
+        )
+
+    raise ValueError(f"Replay is not supported for model '{model_name}'")

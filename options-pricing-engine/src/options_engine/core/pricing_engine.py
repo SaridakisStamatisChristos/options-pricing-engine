@@ -216,6 +216,7 @@ class OptionsEngine:
             "error": result.error,
             "standard_error": result.standard_error,
             "confidence_interval": result.confidence_interval,
+            "capsule_id": result.capsule_id,
         }
 
     def _run_pricing(

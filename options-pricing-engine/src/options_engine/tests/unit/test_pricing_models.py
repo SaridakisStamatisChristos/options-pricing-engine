@@ -9,6 +9,7 @@ from options_engine.core.pricing_models import (
     BinomialModel,
     LongstaffSchwartzModel,
     MonteCarloModel,
+    replay_pricing_capsule,
 )
 
 
@@ -81,6 +82,36 @@ def test_monte_carlo_handles_small_antithetic_path_counts():
     assert lower <= upper
 
 
+def test_monte_carlo_capsule_replay_is_bitwise_stable() -> None:
+    seed = SeedSequence(1234)
+    model = MonteCarloModel(paths=4096, antithetic=True)
+    contract = OptionContract(
+        symbol="MC_DET",
+        strike_price=105.0,
+        time_to_expiry=0.75,
+        option_type=OptionType.PUT,
+    )
+    market = MarketData(spot_price=101.0, risk_free_rate=0.015, dividend_yield=0.002)
+
+    result = model.calculate_price(contract, market, 0.22, seed_sequence=seed)
+    assert result.capsule_id is not None
+    assert result.replay_capsule is not None
+
+    replayed = replay_pricing_capsule(result.replay_capsule)
+
+    assert replayed.capsule_id == result.capsule_id
+    assert replayed.theoretical_price == result.theoretical_price
+    assert replayed.delta == result.delta
+    assert replayed.gamma == result.gamma
+    assert replayed.vega == result.vega
+
+    repeat = model.calculate_price(contract, market, 0.22, seed_sequence=SeedSequence(1234))
+    assert repeat.theoretical_price == result.theoretical_price
+    assert repeat.delta == result.delta
+    assert repeat.gamma == result.gamma
+    assert repeat.vega == result.vega
+
+
 def test_european_call_put_parity_holds() -> None:
     model = BlackScholesModel()
     rng = default_rng(42)
@@ -138,6 +169,97 @@ def test_call_price_monotonic_decreases_with_strike() -> None:
         prices.append(model.calculate_price(contract, market, volatility).theoretical_price)
 
     assert prices == sorted(prices, reverse=True)
+
+
+def test_call_put_parity_is_preserved_across_stress_grid() -> None:
+    model = BlackScholesModel()
+    maturities = [1e-4, 1e-3, 0.01, 0.25, 1.0, 5.0]
+    volatilities = [0.01, 0.05, 0.2, 0.6]
+    strikes = [60.0, 80.0, 100.0, 120.0, 140.0]
+
+    for maturity in maturities:
+        for volatility in volatilities:
+            market = MarketData(spot_price=100.0, risk_free_rate=0.03, dividend_yield=0.01)
+            for strike in strikes:
+                call_contract = OptionContract(
+                    symbol="CALL",
+                    strike_price=strike,
+                    time_to_expiry=maturity,
+                    option_type=OptionType.CALL,
+                )
+                put_contract = OptionContract(
+                    symbol="PUT",
+                    strike_price=strike,
+                    time_to_expiry=maturity,
+                    option_type=OptionType.PUT,
+                )
+
+                call_price = model.calculate_price(call_contract, market, volatility).theoretical_price
+                put_price = model.calculate_price(put_contract, market, volatility).theoretical_price
+
+                parity = market.spot_price * math.exp(-market.dividend_yield * maturity) - strike * math.exp(
+                    -market.risk_free_rate * maturity
+                )
+                assert math.isclose(call_price - put_price, parity, abs_tol=1e-8)
+
+
+def test_call_prices_are_convex_in_strike() -> None:
+    model = BlackScholesModel()
+    strikes = [60.0, 80.0, 100.0, 120.0, 140.0]
+    maturities = [1e-3, 0.05, 1.0]
+    volatilities = [0.05, 0.2, 0.5]
+    market = MarketData(spot_price=100.0, risk_free_rate=0.02, dividend_yield=0.01)
+
+    for maturity in maturities:
+        for volatility in volatilities:
+            prices = []
+            for strike in strikes:
+                contract = OptionContract(
+                    symbol="CALL",
+                    strike_price=strike,
+                    time_to_expiry=maturity,
+                    option_type=OptionType.CALL,
+                )
+                prices.append(model.calculate_price(contract, market, volatility).theoretical_price)
+
+            for left, center, right in zip(prices, prices[1:-1], prices[2:]):
+                second_difference = right - 2.0 * center + left
+                assert second_difference >= -1e-10
+
+
+def test_call_price_monotone_in_maturity_and_volatility() -> None:
+    model = BlackScholesModel()
+    strikes = [60.0, 100.0, 140.0]
+    maturities = [1e-4, 1e-3, 0.01, 0.1, 1.0]
+    volatilities = [0.01, 0.05, 0.2, 0.5]
+    market = MarketData(spot_price=100.0, risk_free_rate=0.025, dividend_yield=0.01)
+
+    for strike in strikes:
+        contracts = [
+            OptionContract(symbol="CALL", strike_price=strike, time_to_expiry=m, option_type=OptionType.CALL)
+            for m in maturities
+        ]
+
+        base_vol = 0.2
+        maturity_prices = [
+            model.calculate_price(contract, market, base_vol).theoretical_price for contract in contracts
+        ]
+
+        for earlier, later in zip(maturity_prices, maturity_prices[1:]):
+            assert later + 1e-10 >= earlier
+
+        vol_prices = []
+        contract = OptionContract(
+            symbol="CALL",
+            strike_price=strike,
+            time_to_expiry=0.5,
+            option_type=OptionType.CALL,
+        )
+        for vol in volatilities:
+            vol_prices.append(model.calculate_price(contract, market, vol).theoretical_price)
+
+        for lower, higher in zip(vol_prices, vol_prices[1:]):
+            assert higher + 1e-10 >= lower
 
 
 def test_monte_carlo_confidence_interval_contracts_with_more_paths() -> None:
