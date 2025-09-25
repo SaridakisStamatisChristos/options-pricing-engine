@@ -19,6 +19,35 @@ from ..utils.validation import validate_pricing_parameters
 
 LOGGER = logging.getLogger(__name__)
 
+SQRT_TWO = math.sqrt(2.0)
+INV_SQRT_TWO_PI = 1.0 / math.sqrt(2.0 * math.pi)
+TAU_MIN = 1e-8
+SIGMA_MIN = 1e-6
+LOG_MONEYNESS_CLAMP = (
+    (1e-6, 8.0),
+    (1e-4, 10.0),
+    (1e-3, 12.0),
+    (1e-2, 14.0),
+    (1e-1, 16.0),
+    (1.0, 18.0),
+    (float("inf"), 20.0),
+)
+
+
+def _norm_pdf(value: float) -> float:
+    return INV_SQRT_TWO_PI * math.exp(-0.5 * value * value)
+
+
+def _norm_cdf(value: float) -> float:
+    return 0.5 * math.erfc(-value / SQRT_TWO)
+
+
+def _log_moneyness_threshold(time_to_expiry: float) -> float:
+    for maturity, clamp in LOG_MONEYNESS_CLAMP:
+        if time_to_expiry <= maturity:
+            return clamp
+    return LOG_MONEYNESS_CLAMP[-1][1]
+
 
 def _black_scholes_payoff(
     contract: OptionContract,
@@ -44,43 +73,59 @@ def _black_scholes_greeks(
     rate = market_data.risk_free_rate
     dividend = market_data.dividend_yield
 
-    if time_to_expiry <= 1e-12 or volatility <= 1e-12:
+    if time_to_expiry <= 0.0 or volatility <= 0.0:
         intrinsic = _black_scholes_payoff(contract, spot, strike)
         return intrinsic, 0.0, 0.0, 0.0, 0.0, 0.0
 
+    time_to_expiry = max(time_to_expiry, TAU_MIN)
+    volatility = max(volatility, SIGMA_MIN)
+
     sqrt_t = math.sqrt(time_to_expiry)
-    numerator = math.log(spot / strike) + (rate - dividend + 0.5 * volatility**2) * time_to_expiry
+    discount_dividend = math.exp(-dividend * time_to_expiry)
+    discount_rate = math.exp(-rate * time_to_expiry)
+    parity_anchor = spot * discount_dividend - strike * discount_rate
+
+    log_moneyness = math.log(spot / strike)
+    numerator = log_moneyness + (rate - dividend + 0.5 * volatility**2) * time_to_expiry
     denominator = volatility * sqrt_t
     d1 = numerator / denominator
     d2 = d1 - volatility * sqrt_t
 
-    pdf = norm.pdf(d1)
+    pdf = _norm_pdf(d1)
+    cdf_d1 = _norm_cdf(d1)
+    cdf_d2 = _norm_cdf(d2)
+
+    clamp_threshold = _log_moneyness_threshold(time_to_expiry)
+    if log_moneyness > clamp_threshold:
+        tail_call = strike * discount_rate * _norm_cdf(-d2) - spot * discount_dividend * _norm_cdf(-d1)
+        call_price = parity_anchor + tail_call
+    else:
+        call_price = spot * discount_dividend * cdf_d1 - strike * discount_rate * cdf_d2
+
+    call_delta = discount_dividend * cdf_d1
+    call_gamma = discount_dividend * pdf / (spot * volatility * sqrt_t)
+    call_theta = (
+        -spot * discount_dividend * pdf * volatility / (2.0 * sqrt_t)
+        - dividend * spot * discount_dividend * cdf_d1
+        + rate * strike * discount_rate * cdf_d2
+    ) / 365.0
+    call_vega = spot * discount_dividend * pdf * sqrt_t / 100.0
+    call_rho = strike * discount_rate * time_to_expiry * cdf_d2 / 100.0
 
     if contract.option_type is OptionType.CALL:
-        price = spot * math.exp(-dividend * time_to_expiry) * norm.cdf(d1) - strike * math.exp(
-            -rate * time_to_expiry
-        ) * norm.cdf(d2)
-        delta = math.exp(-dividend * time_to_expiry) * norm.cdf(d1)
-        rho = strike * time_to_expiry * math.exp(-rate * time_to_expiry) * norm.cdf(d2) / 100.0
-        theta = (
-            -spot * pdf * volatility * math.exp(-dividend * time_to_expiry) / (2.0 * sqrt_t)
-            - dividend * spot * math.exp(-dividend * time_to_expiry) * norm.cdf(d1)
-            + rate * strike * math.exp(-rate * time_to_expiry) * norm.cdf(d2)
-        ) / 365.0
+        price = call_price
+        delta = call_delta
+        gamma = call_gamma
+        theta = call_theta
+        vega = call_vega
+        rho = call_rho
     else:
-        price = strike * math.exp(-rate * time_to_expiry) * norm.cdf(-d2) - spot * math.exp(
-            -dividend * time_to_expiry
-        ) * norm.cdf(-d1)
-        delta = -math.exp(-dividend * time_to_expiry) * norm.cdf(-d1)
-        rho = -strike * time_to_expiry * math.exp(-rate * time_to_expiry) * norm.cdf(-d2) / 100.0
-        theta = (
-            -spot * pdf * volatility * math.exp(-dividend * time_to_expiry) / (2.0 * sqrt_t)
-            + dividend * spot * math.exp(-dividend * time_to_expiry) * norm.cdf(-d1)
-            - rate * strike * math.exp(-rate * time_to_expiry) * norm.cdf(-d2)
-        ) / 365.0
-
-    gamma = math.exp(-dividend * time_to_expiry) * pdf / (spot * volatility * sqrt_t)
-    vega = spot * math.exp(-dividend * time_to_expiry) * pdf * sqrt_t / 100.0
+        price = call_price - parity_anchor
+        delta = call_delta - discount_dividend
+        gamma = call_gamma
+        theta = call_theta + (dividend * spot * discount_dividend - rate * strike * discount_rate) / 365.0
+        vega = call_vega
+        rho = call_rho - time_to_expiry * strike * discount_rate / 100.0
 
     return price, delta, gamma, theta, vega, rho
 
