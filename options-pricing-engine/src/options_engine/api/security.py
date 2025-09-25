@@ -43,10 +43,12 @@ class _AuthenticatorChain:
         self._dev = dev
 
     def decode(self, token: str) -> OIDCClaims:
+        # Try OIDC first if configured.
         if self._primary is not None:
             try:
                 return self._primary.decode(token)
             except OIDCUnavailableError as exc:
+                # Only fall back to dev on *availability* outages.
                 if self._dev is None:
                     raise
                 try:
@@ -54,12 +56,11 @@ class _AuthenticatorChain:
                 except JWTError as dev_exc:
                     raise dev_exc from exc
 
-        if self._primary is not None:
-            return self._primary.decode(token)
-
+        # No primary OIDC: use dev if available.
         if self._dev is not None:
             return self._dev.decode(token)
 
+        # Nothing configured.
         raise AuthenticationConfigurationError("No authenticators configured")
 
 
@@ -78,7 +79,8 @@ def _get_authenticator() -> _AuthenticatorChain:
         )
 
     if settings.dev_jwt_secrets:
-        if settings.oidc_issuer is None or settings.oidc_audience is None:
+        # Hard guard: dev auth requires issuer/audience so claims can be validated consistently.
+        if not settings.oidc_issuer or not settings.oidc_audience:
             raise AuthenticationConfigurationError(
                 "Development authentication requires issuer and audience configuration"
             )
@@ -87,6 +89,11 @@ def _get_authenticator() -> _AuthenticatorChain:
             issuer=settings.oidc_issuer,
             audience=settings.oidc_audience,
             clock_skew_seconds=CLOCK_SKEW_SECONDS,
+        )
+
+    if primary is None and dev is None:
+        raise AuthenticationConfigurationError(
+            "Authentication requires OIDC_ISSUER/OIDC_AUDIENCE/OIDC_JWKS_URL or DEV_JWT_SECRET"
         )
 
     return _AuthenticatorChain(primary=primary, dev=dev)

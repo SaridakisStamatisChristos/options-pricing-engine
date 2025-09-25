@@ -200,7 +200,7 @@ class OIDCAuthenticator:
             else:
                 raise JWTError("Unsupported or unknown key algorithm")
 
-        # jose options: explicit verify/require flags (leeway is a top-level arg to decode)
+        # jose options: explicit verify/require flags (leeway sits inside options per test expectations)
         options = {
             "verify_signature": True,
             "verify_aud": True,
@@ -359,4 +359,3 @@ __all__ = [
     "JWKSUnavailableError",
     "OIDCUnavailableError",
 ]
-
