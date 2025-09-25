@@ -28,8 +28,20 @@ from ..observability.metrics import (
     REQUEST_LATENCY,
 )
 from .config import get_settings
-from .middleware import BodySizeLimitMiddleware, SecurityHeadersMiddleware, ensure_request_id, track_request_duration
+from .middleware import (
+    BodySizeLimitMiddleware,
+    RateLimitResponseMiddleware,
+    SecurityHeadersMiddleware,
+    ensure_request_id,
+    track_request_duration,
+)
 from .routes import market_data, pricing, risk
+
+RateLimitMiddleware: type[BaseHTTPMiddleware] | None
+LimiterClass: type[Any]
+RateLimitExceededType: type[Exception]
+SlowAPIMiddlewareClass: type[BaseHTTPMiddleware] | None
+
 
 try:  # pragma: no cover - optional dependency for offline tests
     from slowapi import Limiter as SlowAPILimiter
@@ -37,6 +49,7 @@ try:  # pragma: no cover - optional dependency for offline tests
     from slowapi.middleware import SlowAPIMiddleware
     from slowapi.util import get_remote_address
     HAS_SLOWAPI = True
+    SlowAPIMiddlewareClass = SlowAPIMiddleware
 except ModuleNotFoundError:  # pragma: no cover - fallback when slowapi is unavailable
     HAS_SLOWAPI = False
 
@@ -122,15 +135,14 @@ except ModuleNotFoundError:  # pragma: no cover - fallback when slowapi is unava
         client = request.client
         return client.host if client else "127.0.0.1"
 
-    SlowAPIMiddleware = None  # type: ignore[assignment]
-    RateLimitMiddleware: type[BaseHTTPMiddleware] | None = _FallbackRateLimitMiddleware
-    SlowAPILimiter = _FallbackLimiter
-    SlowAPIRateLimitExceeded = _FallbackRateLimitExceeded
+    SlowAPIMiddlewareClass = None
+    RateLimitMiddleware = _FallbackRateLimitMiddleware
+    LimiterClass = _FallbackLimiter
+    RateLimitExceededType = _FallbackRateLimitExceeded
 else:
     RateLimitMiddleware = None
-
-Limiter = SlowAPILimiter
-RateLimitExceeded = SlowAPIRateLimitExceeded
+    LimiterClass = SlowAPILimiter
+    RateLimitExceededType = SlowAPIRateLimitExceeded
 
 LOGGER = logging.getLogger(__name__)
 START_TIME = time.time()
@@ -155,7 +167,10 @@ def _create_rate_limit_handler(
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    limiter = Limiter(key_func=get_remote_address, default_limits=[settings.rate_limit_default])
+    limiter = cast(Any, LimiterClass)(
+        key_func=get_remote_address,
+        default_limits=[settings.rate_limit_default],
+    )
 
     app = FastAPI(
         title="UCTG/1 Options Pricing Engine",
@@ -167,13 +182,14 @@ def create_app() -> FastAPI:
     app.state.settings = settings
     app.state.limiter = limiter
 
-    app.add_exception_handler(RateLimitExceeded, _create_rate_limit_handler(app))
-    if HAS_SLOWAPI and SlowAPIMiddleware is not None:
-        app.add_middleware(SlowAPIMiddleware)
+    app.add_exception_handler(RateLimitExceededType, _create_rate_limit_handler(app))
+    if HAS_SLOWAPI and SlowAPIMiddlewareClass is not None:
+        app.add_middleware(SlowAPIMiddlewareClass)
     elif RateLimitMiddleware is not None:
         app.add_middleware(cast(Any, RateLimitMiddleware), limiter=limiter)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(settings.allowed_hosts))
     app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(RateLimitResponseMiddleware)
     app.add_middleware(BodySizeLimitMiddleware, max_body_bytes=settings.max_body_bytes)
     app.add_middleware(
         CORSMiddleware,
