@@ -9,11 +9,13 @@ from typing import Callable, Mapping
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
+from jose.exceptions import ExpiredSignatureError, JWTClaimsError
 
 from ..observability.metrics import AUTH_FAILURES
 from ..security import (
     CLOCK_SKEW_SECONDS,
     DevelopmentJWTAuthenticator,
+    DevelopmentSignatureError,
     OIDCAuthenticator,
     OIDCClaims,
     OIDCUnavailableError,
@@ -22,6 +24,10 @@ from ..security import (
 from .config import get_settings
 
 security = HTTPBearer(auto_error=False)
+
+
+class AuthenticationConfigurationError(RuntimeError):
+    """Raised when authentication has not been configured."""
 
 
 class _AuthenticatorChain:
@@ -37,10 +43,12 @@ class _AuthenticatorChain:
         self._dev = dev
 
     def decode(self, token: str) -> OIDCClaims:
+        # Try OIDC first if configured.
         if self._primary is not None:
             try:
                 return self._primary.decode(token)
             except OIDCUnavailableError as exc:
+                # Only fall back to dev on *availability* outages.
                 if self._dev is None:
                     raise
                 try:
@@ -48,13 +56,12 @@ class _AuthenticatorChain:
                 except JWTError as dev_exc:
                     raise dev_exc from exc
 
-        if self._primary is not None:
-            return self._primary.decode(token)
-
+        # No primary OIDC: use dev if available.
         if self._dev is not None:
             return self._dev.decode(token)
 
-        raise RuntimeError("No authenticators configured")
+        # Nothing configured.
+        raise AuthenticationConfigurationError("No authenticators configured")
 
 
 @lru_cache(maxsize=1)
@@ -72,6 +79,11 @@ def _get_authenticator() -> _AuthenticatorChain:
         )
 
     if settings.dev_jwt_secrets:
+        # Hard guard: dev auth requires issuer/audience so claims can be validated consistently.
+        if not settings.oidc_issuer or not settings.oidc_audience:
+            raise AuthenticationConfigurationError(
+                "Development authentication requires issuer and audience configuration"
+            )
         dev = DevelopmentJWTAuthenticator(
             secrets=settings.dev_jwt_secrets,
             issuer=settings.oidc_issuer,
@@ -80,7 +92,7 @@ def _get_authenticator() -> _AuthenticatorChain:
         )
 
     if primary is None and dev is None:
-        raise RuntimeError(
+        raise AuthenticationConfigurationError(
             "Authentication requires OIDC_ISSUER/OIDC_AUDIENCE/OIDC_JWKS_URL or DEV_JWT_SECRET"
         )
 
@@ -99,6 +111,13 @@ class User:
 def _decode_token(raw_token: str) -> OIDCClaims:
     try:
         return _get_authenticator().decode(raw_token)
+    except AuthenticationConfigurationError as exc:
+        AUTH_FAILURES.labels(reason="not_configured").inc()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication not configured",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
     except KeyError as exc:  # pragma: no cover - defensive guard
         AUTH_FAILURES.labels(reason="unknown_kid").inc()
         raise HTTPException(
@@ -113,6 +132,27 @@ def _decode_token(raw_token: str) -> OIDCClaims:
             detail="Authentication temporarily unavailable",
             headers={"Retry-After": "60"},
         ) from exc
+    except ExpiredSignatureError as exc:
+        AUTH_FAILURES.labels(reason="expired").inc()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token expired",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    except JWTClaimsError as exc:
+        AUTH_FAILURES.labels(reason=_claims_failure_reason(exc)).inc()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    except DevelopmentSignatureError as exc:
+        AUTH_FAILURES.labels(reason="dev_bad_sig").inc()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
     except JWTError as exc:
         AUTH_FAILURES.labels(reason="jwt_error").inc()
         raise HTTPException(
@@ -120,6 +160,15 @@ def _decode_token(raw_token: str) -> OIDCClaims:
             detail="Invalid credentials",
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
+
+
+def _claims_failure_reason(exc: JWTClaimsError) -> str:
+    message = str(exc).lower()
+    if "aud" in message:
+        return "aud"
+    if "iss" in message or "issuer" in message:
+        return "iss"
+    return "claims"
 
 
 async def get_current_user(

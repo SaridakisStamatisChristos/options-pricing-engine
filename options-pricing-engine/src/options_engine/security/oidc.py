@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, Mapping, MutableMapping, Tuple
 
 from jose import JWTError, jwt
+from jose.exceptions import ExpiredSignatureError, JWTClaimsError
 
 try:  # pragma: no cover - httpx optional in offline tests
     import httpx
@@ -32,6 +33,10 @@ class JWKSUnavailableError(RuntimeError):
 
 class OIDCUnavailableError(RuntimeError):
     """Raised when OIDC verification cannot be performed due to key outages."""
+
+
+class DevelopmentSignatureError(JWTError):
+    """Raised when development JWT signatures cannot be verified."""
 
 
 def _fetch_jwks(url: str) -> Mapping[str, Any]:
@@ -195,7 +200,7 @@ class OIDCAuthenticator:
             else:
                 raise JWTError("Unsupported or unknown key algorithm")
 
-        # jose options: explicit verify/require flags (leeway is a top-level arg to decode)
+        # jose options: explicit verify/require flags (leeway sits inside options per test expectations)
         options = {
             "verify_signature": True,
             "verify_aud": True,
@@ -321,8 +326,10 @@ class DevelopmentJWTAuthenticator:
             return OIDCClaims(subject=subject, scopes=scopes, claims=claims, kid=kid)
 
         if last_error is not None:
-            raise last_error
-        raise JWTError("Token could not be verified with development secrets")
+            if isinstance(last_error, (ExpiredSignatureError, JWTClaimsError)):
+                raise last_error
+            raise DevelopmentSignatureError("Development token signature verification failed") from last_error
+        raise DevelopmentSignatureError("Token could not be verified with development secrets")
 
 
 def _extract_scopes(claims: Mapping[str, Any]) -> frozenset[str]:
@@ -345,10 +352,10 @@ def _extract_scopes(claims: Mapping[str, Any]) -> frozenset[str]:
 __all__ = [
     "CLOCK_SKEW_SECONDS",
     "DevelopmentJWTAuthenticator",
+    "DevelopmentSignatureError",
     "OIDCAuthenticator",
     "OIDCClaims",
     "JWKSCache",
     "JWKSUnavailableError",
     "OIDCUnavailableError",
 ]
-

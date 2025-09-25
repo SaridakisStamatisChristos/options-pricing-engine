@@ -3,6 +3,7 @@
 from .oidc import (
     CLOCK_SKEW_SECONDS,
     DevelopmentJWTAuthenticator,
+    DevelopmentSignatureError,
     OIDCAuthenticator,
     OIDCClaims,
     OIDCUnavailableError,
@@ -13,6 +14,7 @@ from .oidc import (
 __all__ = [
     "CLOCK_SKEW_SECONDS",
     "DevelopmentJWTAuthenticator",
+    "DevelopmentSignatureError",
     "OIDCAuthenticator",
     "OIDCClaims",
     "OIDCUnavailableError",

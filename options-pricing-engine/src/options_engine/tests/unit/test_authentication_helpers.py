@@ -9,10 +9,11 @@ from typing import Any
 import pytest
 from fastapi import HTTPException, status
 from jose import JWTError, jwt
+from jose.exceptions import ExpiredSignatureError, JWTClaimsError
 
 from options_engine.api import config as api_config
 from options_engine.api import security as api_security
-from options_engine.security import oidc
+from options_engine.security import DevelopmentSignatureError, oidc
 
 
 class _FakeJWKSCache:
@@ -361,3 +362,78 @@ def test_decode_token_returns_503_on_oidc_outage(monkeypatch: pytest.MonkeyPatch
 
     assert exc.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
     assert recorder.calls and recorder.calls[-1]["reason"] == "jwks_unavailable"
+
+
+def test_decode_token_returns_401_when_not_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = _RecordingCounter()
+    monkeypatch.setattr(api_security, "AUTH_FAILURES", recorder)
+    monkeypatch.setattr(
+        api_security,
+        "_get_authenticator",
+        lambda: _StubAuthenticator(error=api_security.AuthenticationConfigurationError("missing")),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        api_security._decode_token("token")
+
+    assert exc.value.status_code == status.HTTP_401_UNAUTHORIZED
+    assert exc.value.detail == "Authentication not configured"
+    assert recorder.calls and recorder.calls[-1]["reason"] == "not_configured"
+
+
+def test_decode_token_labels_expired_signature(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = _RecordingCounter()
+    monkeypatch.setattr(api_security, "AUTH_FAILURES", recorder)
+    monkeypatch.setattr(
+        api_security,
+        "_get_authenticator",
+        lambda: _StubAuthenticator(error=ExpiredSignatureError("expired")),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        api_security._decode_token("token")
+
+    assert exc.value.status_code == status.HTTP_401_UNAUTHORIZED
+    assert recorder.calls and recorder.calls[-1]["reason"] == "expired"
+
+
+def test_decode_token_labels_claim_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = _RecordingCounter()
+    monkeypatch.setattr(api_security, "AUTH_FAILURES", recorder)
+
+    def _claim_error_auth() -> _StubAuthenticator:
+        return _StubAuthenticator(error=JWTClaimsError("Invalid audience"))
+
+    monkeypatch.setattr(api_security, "_get_authenticator", _claim_error_auth)
+
+    with pytest.raises(HTTPException):
+        api_security._decode_token("token")
+
+    assert recorder.calls and recorder.calls[-1]["reason"] == "aud"
+
+    recorder.calls.clear()
+    monkeypatch.setattr(
+        api_security,
+        "_get_authenticator",
+        lambda: _StubAuthenticator(error=JWTClaimsError("Invalid issuer")),
+    )
+
+    with pytest.raises(HTTPException):
+        api_security._decode_token("token")
+
+    assert recorder.calls and recorder.calls[-1]["reason"] == "iss"
+
+
+def test_decode_token_labels_dev_signature_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = _RecordingCounter()
+    monkeypatch.setattr(api_security, "AUTH_FAILURES", recorder)
+    monkeypatch.setattr(
+        api_security,
+        "_get_authenticator",
+        lambda: _StubAuthenticator(error=DevelopmentSignatureError("bad sig")),
+    )
+
+    with pytest.raises(HTTPException):
+        api_security._decode_token("token")
+
+    assert recorder.calls and recorder.calls[-1]["reason"] == "dev_bad_sig"
