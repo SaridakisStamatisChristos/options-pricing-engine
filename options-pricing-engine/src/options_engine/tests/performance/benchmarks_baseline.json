@@ -10,11 +10,11 @@
     "p99_latency_ms": 4.498741
   },
   "monte_carlo": {
-    "p50_latency_ms": 0.514423,
-    "p95_latency_ms": 0.614964,
-    "p99_latency_ms": 0.687510,
-    "median_ci_half_width": 0.154141,
-    "median_ci_bps": 315.460273,
-    "paths_used": 8000
+    "p50_latency_ms": 1.158283,
+    "p95_latency_ms": 1.627915,
+    "p99_latency_ms": 1.799404,
+    "median_ci_half_width": 0.049623,
+    "median_ci_bps": 113.268816,
+    "paths_used": 16384
   }
 }
