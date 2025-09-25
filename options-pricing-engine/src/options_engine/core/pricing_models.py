@@ -153,6 +153,17 @@ class BinomialModel:
             probability = min(1.0, max(0.0, probability))
             discount = math.exp(-market_data.risk_free_rate * delta_t)
 
+            sqrt_dt = math.sqrt(delta_t)
+            dup = up * sqrt_dt
+            ddown = -down * sqrt_dt
+            denom = up - down
+            if denom == 0.0:
+                raise ZeroDivisionError("up and down factors resulted in zero denominator")
+            numerator = growth - down
+            dnumerator = -ddown
+            ddenom = dup - ddown
+            dprobability = (dnumerator * denom - numerator * ddenom) / (denom**2)
+
             prices = np.array(
                 [
                     market_data.spot_price * (up**j) * (down ** (steps - j))
@@ -161,26 +172,95 @@ class BinomialModel:
                 dtype=float,
             )
 
+            price_vega = np.empty_like(prices)
+            node_indices = np.arange(steps + 1)
+            price_vega[:] = prices * ((2 * node_indices - steps) * sqrt_dt)
+
             if contract.option_type is OptionType.CALL:
                 values = np.maximum(prices - contract.strike_price, 0.0)
+                value_vega = np.where(values > 0.0, price_vega, 0.0)
             else:
                 values = np.maximum(contract.strike_price - prices, 0.0)
+                value_vega = np.where(values > 0.0, -price_vega, 0.0)
+
+            first_step_values: Optional[np.ndarray] = None
+            first_step_prices: Optional[np.ndarray] = None
+            second_step_values: Optional[np.ndarray] = None
+            second_step_prices: Optional[np.ndarray] = None
 
             for index in range(steps - 1, -1, -1):
-                values = discount * (probability * values[1:] + (1.0 - probability) * values[:-1])
-                prices = prices[:-1] / down
+                prev_values = values
+                prev_value_vega = value_vega
+
+                continuation_values = discount * (
+                    probability * prev_values[1:] + (1.0 - probability) * prev_values[:-1]
+                )
+                continuation_vega = discount * (
+                    probability * prev_value_vega[1:] + (1.0 - probability) * prev_value_vega[:-1]
+                )
+                continuation_vega += discount * dprobability * (
+                    prev_values[1:] - prev_values[:-1]
+                )
+
+                prev_prices = prices
+                prev_price_vega = price_vega
+                prices = prev_prices[:-1] * up
+                price_vega = prev_price_vega[:-1] * up + prev_prices[:-1] * dup
+
+                values = continuation_values
+                value_vega = continuation_vega
 
                 if contract.exercise_style is ExerciseStyle.AMERICAN:
                     if contract.option_type is OptionType.CALL:
                         exercise_value = np.maximum(prices - contract.strike_price, 0.0)
+                        exercise_vega = np.where(exercise_value > 0.0, price_vega, 0.0)
                     else:
                         exercise_value = np.maximum(contract.strike_price - prices, 0.0)
-                    values = np.maximum(values, exercise_value)
+                        exercise_vega = np.where(exercise_value > 0.0, -price_vega, 0.0)
+
+                    exercise_mask = exercise_value > values
+                    if np.any(exercise_mask):
+                        values = np.where(exercise_mask, exercise_value, values)
+                        value_vega = np.where(exercise_mask, exercise_vega, value_vega)
+
+                if index == 2:
+                    second_step_values = values.copy()
+                    second_step_prices = prices.copy()
+                if index == 1:
+                    first_step_values = values.copy()
+                    first_step_prices = prices.copy()
 
             elapsed_ms = (time.perf_counter() - start) * 1000.0
+            delta: Optional[float] = None
+            gamma: Optional[float] = None
+
+            if first_step_values is not None and first_step_prices is not None:
+                denom = first_step_prices[1] - first_step_prices[0]
+                if abs(denom) > 0:
+                    delta = float((first_step_values[1] - first_step_values[0]) / denom)
+
+            if (
+                delta is not None
+                and second_step_values is not None
+                and second_step_prices is not None
+                and first_step_prices is not None
+            ):
+                down_denom = second_step_prices[1] - second_step_prices[0]
+                up_denom = second_step_prices[2] - second_step_prices[1]
+                root_denom = first_step_prices[1] - first_step_prices[0]
+                if abs(down_denom) > 0 and abs(up_denom) > 0 and abs(root_denom) > 0:
+                    delta_down = (second_step_values[1] - second_step_values[0]) / down_denom
+                    delta_up = (second_step_values[2] - second_step_values[1]) / up_denom
+                    gamma = float((delta_up - delta_down) / root_denom)
+
+            vega = float(value_vega[0] / 100.0)
+
             return PricingResult(
                 contract_id=contract.contract_id,
                 theoretical_price=float(values[0]),
+                delta=delta,
+                gamma=gamma,
+                vega=vega,
                 computation_time_ms=elapsed_ms,
                 model_used=f"binomial_{steps}",
                 implied_volatility=volatility,
@@ -237,6 +317,27 @@ class MonteCarloModel:
             # Ensure positive, integer number of simulation paths
             simulation_paths = int(max(1, self.paths))
 
+            if contract.time_to_expiry <= 1e-12 or volatility <= 1e-12:
+                (
+                    price,
+                    delta,
+                    gamma,
+                    _theta,
+                    vega,
+                    _rho,
+                ) = _black_scholes_greeks(contract, market_data, max(volatility, 1e-12))
+                elapsed_ms = (time.perf_counter() - start) * 1000.0
+                return PricingResult(
+                    contract_id=contract.contract_id,
+                    theoretical_price=max(0.0, price),
+                    delta=delta,
+                    gamma=gamma,
+                    vega=vega,
+                    computation_time_ms=elapsed_ms,
+                    model_used=f"monte_carlo_{simulation_paths}",
+                    implied_volatility=volatility,
+                )
+
             sequence = seed_sequence or self.seed_sequence
             rng = _thread_local_generator(sequence)
 
@@ -267,6 +368,48 @@ class MonteCarloModel:
             discounted_payoffs = discount_factor * payoff
             theoretical_price = float(np.mean(discounted_payoffs))
 
+            sqrt_time = time_sqrt
+            if contract.option_type is OptionType.CALL:
+                indicator = terminal_prices > contract.strike_price
+                delta_path = discount_factor * np.where(
+                    indicator,
+                    terminal_prices / market_data.spot_price,
+                    0.0,
+                )
+                sensitivity_term = terminal_prices * (
+                    sqrt_time * draws - volatility * contract.time_to_expiry
+                )
+                vega_path = discount_factor * np.where(indicator, sensitivity_term, 0.0)
+            else:
+                indicator = terminal_prices < contract.strike_price
+                delta_path = -discount_factor * np.where(
+                    indicator,
+                    terminal_prices / market_data.spot_price,
+                    0.0,
+                )
+                sensitivity_term = -terminal_prices * (
+                    sqrt_time * draws - volatility * contract.time_to_expiry
+                )
+                vega_path = discount_factor * np.where(indicator, sensitivity_term, 0.0)
+
+            drift_term = (
+                np.log(terminal_prices / market_data.spot_price)
+                - (market_data.risk_free_rate - market_data.dividend_yield - 0.5 * volatility**2)
+                * contract.time_to_expiry
+            )
+            spot = market_data.spot_price
+            sigma_sq_t = max(volatility**2 * contract.time_to_expiry, 1e-18)
+            inv_spot_sigma_sq_t = 1.0 / (spot * sigma_sq_t)
+            inv_spot_sq_sigma_sq_t = 1.0 / (spot**2 * sigma_sq_t)
+            likelihood_ratio = drift_term * inv_spot_sigma_sq_t
+            gamma_path = discount_factor * payoff * (
+                likelihood_ratio**2 - (1.0 + drift_term) * inv_spot_sq_sigma_sq_t
+            )
+
+            delta_estimate = float(np.mean(delta_path))
+            gamma_estimate = float(np.mean(gamma_path))
+            vega_estimate = float(np.mean(vega_path) / 100.0)
+
             standard_error: Optional[float] = None
             confidence_interval: Optional[Tuple[float, float]] = None
             if simulation_paths > 1:
@@ -283,6 +426,9 @@ class MonteCarloModel:
             return PricingResult(
                 contract_id=contract.contract_id,
                 theoretical_price=max(0.0, theoretical_price),
+                delta=delta_estimate,
+                gamma=gamma_estimate,
+                vega=vega_estimate,
                 computation_time_ms=elapsed_ms,
                 model_used=f"monte_carlo_{simulation_paths}",
                 implied_volatility=volatility,
