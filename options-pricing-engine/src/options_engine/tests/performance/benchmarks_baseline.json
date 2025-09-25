@@ -1,12 +1,20 @@
 {
   "black_scholes": {
-    "p99_latency_ms": 0.0508
+    "p50_latency_ms": 0.002503,
+    "p95_latency_ms": 0.004211,
+    "p99_latency_ms": 0.004860
   },
   "binomial": {
-    "p99_latency_ms": 9.9
+    "p50_latency_ms": 2.862136,
+    "p95_latency_ms": 3.204430,
+    "p99_latency_ms": 4.498741
   },
   "monte_carlo": {
-    "p99_latency_ms": 2.7341,
-    "median_ci_half_width": 0.1565
+    "p50_latency_ms": 0.514423,
+    "p95_latency_ms": 0.614964,
+    "p99_latency_ms": 0.687510,
+    "median_ci_half_width": 0.154141,
+    "median_ci_bps": 315.460273,
+    "paths_used": 8000
   }
 }
