@@ -23,7 +23,6 @@ _JWKSFetcher = Callable[[str], Mapping[str, Any]]
 
 def _fetch_jwks(url: str) -> Mapping[str, Any]:
     """Fetch the JWKS document from the configured authority."""
-
     if httpx is not None:
         with httpx.Client(timeout=5.0) as client:
             response = client.get(url)
@@ -40,7 +39,6 @@ def _fetch_jwks(url: str) -> Mapping[str, Any]:
 @dataclass(slots=True)
 class OIDCClaims:
     """Subset of token claims relevant for downstream consumers."""
-
     subject: str
     scopes: frozenset[str]
     claims: Mapping[str, Any]
@@ -67,7 +65,6 @@ class JWKSCache:
 
     def reset(self) -> None:
         """Force the cache to reload keys on next access."""
-
         with self._lock:
             self._next_refresh = 0.0
             self._current_keys = {}
@@ -101,7 +98,6 @@ class JWKSCache:
 
     def get_key(self, kid: str) -> Mapping[str, Any]:
         """Return the signing key for the supplied key identifier."""
-
         if not kid:
             raise KeyError("kid must be provided")
 
@@ -128,8 +124,8 @@ class JWKSCache:
 class OIDCAuthenticator:
     """Validate JWT access tokens issued by an OpenID Connect provider."""
 
-    # Conservative default allow-list; reduce if you know the exact alg.
-    _ALLOWED_ALGS = frozenset({"RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "HS256", "HS384", "HS512"})
+    # Conservative default allow-list; narrow to your IdP if possible (e.g., {"RS256"}).
+    _ALLOWED_ALGS = frozenset({"RS256", "RS384", "RS512", "ES256", "ES384", "ES512"})
 
     def __init__(
         self,
@@ -150,7 +146,6 @@ class OIDCAuthenticator:
 
     def decode(self, token: str) -> OIDCClaims:
         """Decode and validate the supplied JWT access token."""
-
         if not token:
             raise JWTError("Token must not be empty")
 
@@ -163,29 +158,25 @@ class OIDCAuthenticator:
         key = self._jwks_cache.get_key(kid)
         key_alg = key.get("alg")
         if not isinstance(key_alg, str) or key_alg not in self._ALLOWED_ALGS:
-            # Some JWKS omit 'alg' per key; default to RS256 if kty is RSA.
+            # Some JWKS omit 'alg' per key; default by kty conservatively.
             kty = key.get("kty")
             if kty == "RSA":
                 key_alg = "RS256"
             elif kty == "EC":
                 key_alg = "ES256"
-            elif kty == "oct":
-                key_alg = "HS256"
             else:
                 raise JWTError("Unsupported or unknown key algorithm")
 
-        # jose options: use explicit verify/require flags and carry the configured skew tolerance.
+        # jose options: explicit verify/require flags (leeway is a top-level arg to decode)
         options = {
             "verify_signature": True,
             "verify_aud": True,
             "verify_exp": True,
             "verify_nbf": True,
             "verify_iat": True,
-            # Require presence of these claims:
             "require_exp": True,
             "require_iat": True,
             "require_nbf": True,
-            "leeway": self._clock_skew_seconds,
         }
 
         def _do_decode() -> Mapping[str, Any]:
@@ -196,6 +187,7 @@ class OIDCAuthenticator:
                 audience=self._audience,
                 issuer=self._issuer,
                 options=options,
+                leeway=self._clock_skew_seconds,
             )
 
         try:
@@ -212,6 +204,7 @@ class OIDCAuthenticator:
                 audience=self._audience,
                 issuer=self._issuer,
                 options=options,
+                leeway=self._clock_skew_seconds,
             )
 
         subject = claims.get("sub")
@@ -260,12 +253,12 @@ class DevelopmentJWTAuthenticator:
             "require_nbf": True,
             "verify_aud": bool(self._audience),
             "require_aud": bool(self._audience),
-            "leeway": self._clock_skew_seconds,
         }
 
         kwargs: Dict[str, Any] = {
             "options": options,
             "algorithms": list(self._ALLOWED_ALGS),
+            "leeway": self._clock_skew_seconds,
         }
         if self._audience:
             kwargs["audience"] = self._audience
@@ -314,3 +307,4 @@ __all__ = [
     "OIDCClaims",
     "JWKSCache",
 ]
+
