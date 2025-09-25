@@ -25,9 +25,10 @@ operational guardrails.
    export OIDC_JWKS_URL="https://auth.local/.well-known/jwks.json"
    ```
 
-   For local development you may optionally set `OPE_JWT_SECRET` (and rotation values in
-   `OPE_JWT_ADDITIONAL_SECRETS`) to use the built-in HMAC fallback while no OIDC provider is
-   available. The variables are ignored – and forbidden – when `OPE_ENVIRONMENT=production`.
+   For local development you may optionally set `DEV_JWT_SECRET` (and rotation values in
+   `DEV_JWT_ADDITIONAL_SECRETS`) to use the built-in HMAC fallback while no OIDC provider is
+   available. Secrets must decode to at least 32 bytes (base64url or hexadecimal values are
+   accepted). The variables are ignored – and forbidden – when `OPE_ENVIRONMENT=production`.
 
 3. **Launch the API**
 
@@ -60,8 +61,8 @@ defaults in non-production environments but must be explicitly configured in pro
 | `OIDC_JWKS_URL` | **Required in production.** HTTPS endpoint serving the JWKS document. | unset |
 | `RATE_LIMIT_DEFAULT` | Default SlowAPI rate limit applied to authenticated routes. | `60/minute` |
 | `MAX_BODY_BYTES` | Maximum accepted request payload size. | `1_048_576` |
-| `OPE_JWT_SECRET` | Optional symmetric secret for non-production development only. | unset |
-| `OPE_JWT_ADDITIONAL_SECRETS` | Additional development secrets accepted during rotation. | empty |
+| `DEV_JWT_SECRET` | Optional symmetric secret for non-production environments. Must be ≥32 bytes after decoding (base64url or hex). | unset |
+| `DEV_JWT_ADDITIONAL_SECRETS` | Additional development secrets accepted during rotation. Must satisfy the same length/encoding requirements. | empty |
 | `OPE_ALLOWED_HOSTS` | Comma-separated host allow-list for the TrustedHost middleware. **Required in production.** | `localhost,127.0.0.1` |
 | `OPE_ALLOWED_ORIGINS` | CORS allow list. | `http://localhost,http://localhost:3000,http://localhost:8000` |
 | `OPE_CORS_ALLOW_CREDENTIALS` | Whether CORS responses include credentials. | `true` |
@@ -81,9 +82,11 @@ defaults in non-production environments but must be explicitly configured in pro
   `scope` or `scp` claim is parsed as a space-delimited list.
 * JWKS documents are cached for 5 minutes. During key rotation both the previous and current
   keys remain valid automatically.
-* In non-production environments the API can validate tokens signed with `OPE_JWT_SECRET` when an
-  OIDC provider is unavailable. Multiple secrets may be provided to smooth rotations. The fallback
-  is disabled in production.
+* In non-production environments the API can validate tokens signed with `DEV_JWT_SECRET` when an
+  OIDC provider is unavailable. Multiple secrets may be provided (via
+  `DEV_JWT_ADDITIONAL_SECRETS`) to smooth rotations. Development tokens must carry the same
+  `iss`, `aud`, `sub`, `iat`, `nbf` and `exp` claims as production OIDC tokens and are rejected in
+  production deployments.
 * API endpoints attach strict transport security, request IDs and JSON structured logs for every
   call. Headers such as `X-Content-Type-Options` and `Strict-Transport-Security` are enforced by
   middleware.

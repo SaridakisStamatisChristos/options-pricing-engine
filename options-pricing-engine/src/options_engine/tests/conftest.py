@@ -16,7 +16,7 @@ from options_engine.security import oidc
 
 
 FAKE_KID = "test-key"
-FAKE_SECRET = "test-secret"
+FAKE_SECRET = "dev-secret-value-at-least-32-bytes!!!"
 FAKE_JWKS = {
     "keys": [
         {
@@ -31,7 +31,7 @@ FAKE_JWKS = {
 
 os.environ.setdefault("OIDC_ISSUER", "https://issuer.test")
 os.environ.setdefault("OIDC_AUDIENCE", "options-pricing-engine")
-os.environ.setdefault("OIDC_JWKS_URL", "https://issuer.test/jwks")
+os.environ.setdefault("DEV_JWT_SECRET", FAKE_SECRET)
 os.environ.setdefault("OPE_ALLOWED_HOSTS", "testserver,localhost,127.0.0.1")
 os.environ.setdefault("OPE_ALLOWED_ORIGINS", "http://testserver")
 os.environ.setdefault("OPE_THREADS", "2")
@@ -45,6 +45,8 @@ def _configure_security() -> Iterator[None]:
 
     monkeypatcher = pytest.MonkeyPatch()
     monkeypatcher.setattr(oidc, "_fetch_jwks", lambda _: FAKE_JWKS)
+    monkeypatcher.setenv("DEV_JWT_SECRET", FAKE_SECRET)
+    monkeypatcher.setenv("OIDC_JWKS_URL", "")
     get_settings.cache_clear()
     _get_authenticator.cache_clear()
     yield

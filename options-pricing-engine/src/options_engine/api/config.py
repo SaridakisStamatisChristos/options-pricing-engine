@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import os
 from dataclasses import dataclass
 from functools import lru_cache
@@ -40,6 +42,31 @@ def _split_csv(value: str | None) -> Tuple[str, ...]:
     if not value:
         return ()
     return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def _normalise_dev_secret(name: str, value: str) -> bytes:
+    trimmed = value.strip()
+    candidates: list[bytes] = []
+    try:
+        padded = trimmed + "=" * ((4 - len(trimmed) % 4) % 4)
+        candidates.append(base64.urlsafe_b64decode(padded.encode("ascii")))
+    except (ValueError, binascii.Error, UnicodeEncodeError):
+        pass
+
+    try:
+        candidates.append(bytes.fromhex(trimmed))
+    except ValueError:
+        pass
+
+    candidates.append(trimmed.encode("utf-8"))
+
+    for candidate in candidates:
+        if len(candidate) >= 32:
+            return candidate
+
+    raise RuntimeError(
+        f"{name} must decode to at least 32 bytes; supply a base64url or hex encoded secret"
+    )
 
 
 def _as_int(name: str, *, default: int | None = None, minimum: int | None = None) -> int:
@@ -104,7 +131,7 @@ class Settings:
     oidc_issuer: str | None
     oidc_audience: str | None
     oidc_jwks_url: str | None
-    dev_jwt_secrets: Tuple[str, ...]
+    dev_jwt_secrets: Tuple[bytes, ...]
 
     @property
     def is_production(self) -> bool:
@@ -133,9 +160,32 @@ def get_settings() -> Settings:
             "http://localhost:8000",
         )
 
-    dev_primary_secret = _get_env("OPE_JWT_SECRET")
-    rotation_secrets = _split_csv(_get_env("OPE_JWT_ADDITIONAL_SECRETS"))
-    dev_jwt_secrets = tuple(secret for secret in (dev_primary_secret, *rotation_secrets) if secret)
+    dev_primary_candidates = [
+        (name, value)
+        for name in ("DEV_JWT_SECRET", "OPE_JWT_SECRET")
+        if (value := _get_env(name))
+    ]
+    if len(dev_primary_candidates) > 1:
+        raise RuntimeError("Only one of DEV_JWT_SECRET or OPE_JWT_SECRET may be set")
+    dev_primary_secret = dev_primary_candidates[0] if dev_primary_candidates else None
+
+    additional_candidates: list[tuple[str, str]] = []
+    for env_name in ("DEV_JWT_ADDITIONAL_SECRETS", "OPE_JWT_ADDITIONAL_SECRETS"):
+        additional_candidates.extend((env_name, item) for item in _split_csv(_get_env(env_name)))
+
+    dev_secret_envs: set[str] = set()
+    dev_secret_bytes: list[bytes] = []
+    if dev_primary_secret is not None:
+        env_name, raw_value = dev_primary_secret
+        dev_secret_envs.add(env_name)
+        dev_secret_bytes.append(_normalise_dev_secret(env_name, raw_value))
+
+    for index, (env_name, raw_value) in enumerate(additional_candidates):
+        dev_secret_envs.add(env_name)
+        label = f"{env_name}[{index}]" if len(additional_candidates) > 1 else env_name
+        dev_secret_bytes.append(_normalise_dev_secret(label, raw_value))
+
+    dev_jwt_secrets = tuple(dev_secret_bytes)
 
     oidc_issuer = _get_env("OIDC_ISSUER")
     oidc_audience = _get_env("OIDC_AUDIENCE")
@@ -156,8 +206,11 @@ def get_settings() -> Settings:
                 "Production deployment requires OIDC configuration: "
                 + ", ".join(sorted(missing))
             )
-        if dev_primary_secret:
-            raise RuntimeError("OPE_JWT_SECRET must not be set when OPE_ENVIRONMENT=production")
+        if dev_secret_envs:
+            names = ", ".join(sorted(dev_secret_envs))
+            raise RuntimeError(
+                "Development JWT secrets are forbidden in production: " + names
+            )
 
     threadpool_workers = _as_int("OPE_THREADS", default=8, minimum=1)
     threadpool_queue_size = _as_int("OPE_THREAD_QUEUE_MAX", default=32, minimum=0)
@@ -182,6 +235,11 @@ def get_settings() -> Settings:
 
     rate_limit_default = _get_env("RATE_LIMIT_DEFAULT", default="60/minute") or "60/minute"
     max_body_bytes = _as_int("MAX_BODY_BYTES", default=1_048_576, minimum=1_024)
+
+    if dev_jwt_secrets and (not oidc_issuer or not oidc_audience):
+        raise RuntimeError(
+            "DEV_JWT_SECRET requires OIDC_ISSUER and OIDC_AUDIENCE to validate dev tokens"
+        )
 
     return Settings(
         environment=environment,
