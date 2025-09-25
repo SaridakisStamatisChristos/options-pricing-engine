@@ -1,0 +1,12 @@
+{
+  "black_scholes": {
+    "p99_latency_ms": 0.0508
+  },
+  "binomial": {
+    "p99_latency_ms": 9.9
+  },
+  "monte_carlo": {
+    "p99_latency_ms": 2.7341,
+    "median_ci_half_width": 0.1565
+  }
+}
