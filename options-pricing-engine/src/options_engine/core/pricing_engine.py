@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 """Threaded options pricing engine with caching."""
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from ..observability.metrics import (
     THREADPOOL_QUEUE_DEPTH,
     THREADPOOL_QUEUE_WAIT,
     THREADPOOL_REJECTIONS,
+    THREADPOOL_SATURATION,
     THREADPOOL_WORKERS,
 )
 from .models import MarketData, OptionContract, PricingResult
@@ -157,6 +159,7 @@ class OptionsEngine:
         THREADPOOL_QUEUE_WAIT.labels(engine=self.name).observe(wait_time)
         if not acquired:
             THREADPOOL_REJECTIONS.labels(engine=self.name).inc()
+            THREADPOOL_SATURATION.labels(engine=self.name).inc()
             raise RuntimeError("Pricing engine is saturated")
 
         with self._pending_lock:

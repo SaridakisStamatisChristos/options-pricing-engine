@@ -1,5 +1,6 @@
 import math
 import warnings
+from numpy.random import default_rng, SeedSequence
 
 from options_engine.core.models import MarketData, OptionContract, OptionType
 from options_engine.core.pricing_models import BlackScholesModel, MonteCarloModel
@@ -33,3 +34,90 @@ def test_monte_carlo_handles_small_antithetic_path_counts():
     assert result.confidence_interval is not None
     lower, upper = result.confidence_interval
     assert lower <= upper
+
+
+def test_european_call_put_parity_holds() -> None:
+    model = BlackScholesModel()
+    rng = default_rng(42)
+
+    for _ in range(10):
+        spot = float(rng.uniform(50.0, 150.0))
+        strike = float(rng.uniform(50.0, 150.0))
+        risk_free_rate = float(rng.uniform(0.0, 0.1))
+        dividend_yield = float(rng.uniform(0.0, 0.05))
+        time_to_expiry = float(rng.uniform(0.1, 2.0))
+        volatility = float(rng.uniform(0.05, 0.6))
+
+        call_contract = OptionContract(
+            symbol="PCALL",
+            strike_price=strike,
+            time_to_expiry=time_to_expiry,
+            option_type=OptionType.CALL,
+        )
+        put_contract = OptionContract(
+            symbol="PPUT",
+            strike_price=strike,
+            time_to_expiry=time_to_expiry,
+            option_type=OptionType.PUT,
+        )
+        market = MarketData(
+            spot_price=spot,
+            risk_free_rate=risk_free_rate,
+            dividend_yield=dividend_yield,
+        )
+
+        call_price = model.calculate_price(call_contract, market, volatility).theoretical_price
+        put_price = model.calculate_price(put_contract, market, volatility).theoretical_price
+
+        expected = spot * math.exp(-dividend_yield * time_to_expiry) - strike * math.exp(
+            -risk_free_rate * time_to_expiry
+        )
+        assert math.isclose(call_price - put_price, expected, rel_tol=0.0, abs_tol=1e-6)
+
+
+def test_call_price_monotonic_decreases_with_strike() -> None:
+    model = BlackScholesModel()
+    market = MarketData(spot_price=110.0, risk_free_rate=0.02, dividend_yield=0.01)
+    time_to_expiry = 1.0
+    volatility = 0.25
+
+    strikes = [80.0, 90.0, 100.0, 110.0, 120.0]
+    prices = []
+    for strike in strikes:
+        contract = OptionContract(
+            symbol=f"CALL{int(strike)}",
+            strike_price=strike,
+            time_to_expiry=time_to_expiry,
+            option_type=OptionType.CALL,
+        )
+        prices.append(model.calculate_price(contract, market, volatility).theoretical_price)
+
+    assert prices == sorted(prices, reverse=True)
+
+
+def test_monte_carlo_confidence_interval_contracts_with_more_paths() -> None:
+    base_seed = SeedSequence(2024)
+    base_model = MonteCarloModel(paths=4096, seed_sequence=base_seed.spawn(1)[0])
+    refined_model = MonteCarloModel(paths=8192, seed_sequence=base_seed.spawn(1)[0])
+
+    contract = OptionContract(
+        symbol="MC",
+        strike_price=100.0,
+        time_to_expiry=1.0,
+        option_type=OptionType.CALL,
+    )
+    market = MarketData(spot_price=105.0, risk_free_rate=0.01)
+
+    base_result = base_model.calculate_price(contract, market, 0.2)
+    refined_result = refined_model.calculate_price(contract, market, 0.2)
+
+    assert base_result.confidence_interval is not None
+    assert refined_result.confidence_interval is not None
+
+    def _half_width(interval: tuple[float, float]) -> float:
+        lower, upper = interval
+        return abs(upper - lower) / 2.0
+
+    assert _half_width(refined_result.confidence_interval) < _half_width(
+        base_result.confidence_interval
+    )

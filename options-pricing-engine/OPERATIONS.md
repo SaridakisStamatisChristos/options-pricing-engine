@@ -13,15 +13,17 @@ playbooks for the Options Pricing Engine (OPE).
 
 ## Startup checklist
 
-1. Export required secrets (see [`README.md`](README.md)).
+1. Export required secrets (see [`README.md`](README.md)). Ensure `OIDC_ISSUER`,
+   `OIDC_AUDIENCE` and `OIDC_JWKS_URL` are present in production.
 2. `uvicorn options_engine.api.fastapi_app:app --host 0.0.0.0 --port 8000`.
-3. Verify `/health` returns `status=healthy` and the expected `environment`.
+3. Verify `/healthz` returns `status=ok`, the expected `environment` and
+   non-null uptime.
 4. Confirm Prometheus is scraping `/metrics` and the `ope_request_total`
    counter is incrementing.
 
 ## Health probes
 
-* **Liveness/readiness:** `GET /health`
+* **Liveness/readiness:** `GET /healthz`
 * **Metrics:** `GET /metrics` (Prometheus exposition format)
 
 ## Alert response
@@ -29,37 +31,27 @@ playbooks for the Options Pricing Engine (OPE).
 Alerts are defined in `monitoring/prometheus/rules.yml` and should be wired into
 PagerDuty or your preferred alert manager.
 
-### `OPEHighHttpErrorRate`
+### SLO-aligned alerts
 
-1. Inspect the FastAPI logs for 5xx bursts.
-2. Check upstream dependencies (e.g. authentication provider) for outages.
-3. If the issue is caused by malformed client requests, consider tightening
-   validation or request limits.
-
-### `OPEHighLatencyP95`
-
-1. Look at `ope_model_latency_seconds` histogram to identify the slow model.
-2. Inspect CPU utilisation on the instance; consider increasing `OPE_THREADS`
-   or scaling horizontally.
-3. For Monte Carlo workloads, ensure callers are not requesting excessively
-   large batches; the API enforces `OPE_MAX_CONTRACTS` but clients may need to
-   batch responsibly.
-
-### `OPEThreadPoolRejections`
-
-1. Check `ope_threadpool_queue_depth` and `ope_threadpool_queue_wait_seconds`
-   histograms.
-2. If the queue depth is pegged, increase `OPE_THREAD_QUEUE_MAX` and/or
-   `OPE_THREADS` temporarily, and file an issue to revisit capacity planning.
-3. Review logs for repeated `Pricing task timed out` errors; tune
-   `OPE_THREAD_TASK_TIMEOUT_SECONDS` judiciously.
-
-### `OPEPersistentQueueBacklog`
-
-1. Inspect the offending route (`ope_request_latency_seconds` labelled by
-   route) to determine which endpoint is causing pressure.
-2. Evaluate whether cache hit rate is low; if so consider increasing the LRU
-   cache size (`cache_size` parameter when initialising `OptionsEngine`).
+* **`OPEHighHttpErrorRate`** – investigate FastAPI JSON logs for 5xx bursts
+  (each entry includes a `request_id` and the authenticated `user` where
+  available). Check upstream dependencies, especially the OIDC issuer, for
+  outages. Watch `ope_auth_failures_total{reason="jwt_error"}` for spikes that
+  may signal clock drift or invalid tokens.
+* **`OPEHighLatencyP95`** – examine `ope_request_latency_seconds` per route and
+  `ope_model_latency_seconds` to determine the bottlenecked pricing model.
+  Inspect CPU utilisation; increase `OPE_THREADS` or scale horizontally if
+  saturation persists. For Monte Carlo workloads ensure callers respect
+  batching guidance.
+* **`OPEThreadPoolRejections`** – monitor both `ope_threadpool_queue_depth` and
+  `ope_threadpool_queue_wait_seconds`. Sustained saturation should trigger
+  capacity planning. Temporary relief can be achieved by increasing
+  `OPE_THREAD_QUEUE_MAX` and/or `OPE_THREADS`. `ope_threadpool_saturation_total`
+  provides a counter for hard rejections.
+* **`OPERateLimitSpike` / `OPEPayloadRejections`** – high rates on
+  `ope_rate_limit_rejections_total` or `ope_payload_too_large_total` indicate
+  abusive clients or misconfigured integrations. Consider tuning
+  `RATE_LIMIT_DEFAULT` or `MAX_BODY_BYTES` while coordinating with consumers.
 
 ## Scaling guidance
 
@@ -73,17 +65,25 @@ PagerDuty or your preferred alert manager.
 
 ## Token rotation
 
-1. Generate the new secret.
-2. Deploy with `OPE_JWT_SECRET=<new>` and
-   `OPE_JWT_ADDITIONAL_SECRETS=<old_1>,<old_2>` to accept legacy tokens.
-3. After clients have rotated, remove the old secrets from
-   `OPE_JWT_ADDITIONAL_SECRETS` and redeploy.
+OIDC signing keys are delivered via JWKS. The authenticator caches the latest
+document for five minutes while retaining the previously active key set.
+
+1. Publish the new key to the identity provider. Keep the old key in the JWKS
+   during the rollout window.
+2. Wait for clients to refresh their tokens (recommended overlap ≥10 minutes).
+   The service accepts both the previous and current `kid` values during this
+   time.
+3. Remove the legacy key from the JWKS once monitoring confirms all tokens
+   carry the new `kid`. The cache refresh interval is five minutes; trigger a
+   manual refresh by clearing the FastAPI pod if necessary.
 
 ## Troubleshooting tips
 
 * `ope_model_errors_total{model="monte_carlo_20k"}` increments when pricing
-  models throw. Inspect logs for stack traces.
+  models throw. Inspect logs (search by `request_id`) for stack traces.
 * `ope_threadpool_tasks_in_flight` near `OPE_THREADS` indicates full utilisation;
   combine with queue depth to spot saturation early.
+* `ope_rate_limit_rejections_total` and `ope_payload_too_large_total` help spot
+  abusive clients before they manifest as latency problems.
 * Use the optional `seed` request field in staging to reproduce Monte Carlo
   scenarios before deploying fixes.
