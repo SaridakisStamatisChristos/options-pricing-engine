@@ -15,10 +15,12 @@ Options Pricing Engine (OPE).
   * Signing keys are cached for five minutes and the previous keyset is kept as
     a grace period so that rotations do not trigger authentication failures.
 * **Development fallback.** When an OIDC provider is unavailable (for example,
-  on an isolated developer laptop), you may provide `OPE_JWT_SECRET` and
-  optional rotation values in `OPE_JWT_ADDITIONAL_SECRETS`. Tokens signed with
-  any of those HMAC secrets are accepted in non-production environments. The
-  legacy secrets are ignored – and rejected – when `OPE_ENVIRONMENT=production`.
+  on an isolated developer laptop), you may provide `DEV_JWT_SECRET` and
+  optional rotation values in `DEV_JWT_ADDITIONAL_SECRETS`. Secrets must decode
+  to ≥32 bytes (base64url or hexadecimal). Development tokens are required to
+  contain the same issuer, audience, subject, issued-at, not-before and expiry
+  claims enforced in OIDC mode. HMAC secrets are ignored – and rejected – when
+  `OPE_ENVIRONMENT=production`.
 
 ## Secret rotation
 
@@ -26,9 +28,10 @@ Options Pricing Engine (OPE).
   automatically refreshes JWKS documents and accepts both the current and
   previously seen keyset during the transition.
 * **Development secrets** can be rotated by deploying with the new value in
-  `OPE_JWT_SECRET` and the previous entries listed in
-  `OPE_JWT_ADDITIONAL_SECRETS`. Once all clients are updated, remove the old
-  values and redeploy.
+  `DEV_JWT_SECRET` and the previous entries listed in
+  `DEV_JWT_ADDITIONAL_SECRETS`. Once all clients are updated, remove the old
+  values and redeploy. Using any development secret in production is treated as
+  a deployment misconfiguration and the application will refuse to start.
 
 ## Transport security
 

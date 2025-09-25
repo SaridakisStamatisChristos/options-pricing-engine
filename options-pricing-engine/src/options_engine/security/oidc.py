@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, Mapping, MutableMapping, Tuple
+
+from jose import JWTError, jwt
+from jose.exceptions import ExpiredSignatureError, JWTClaimsError
 
 try:  # pragma: no cover - httpx optional in offline tests
     import httpx
@@ -13,12 +17,26 @@ except ModuleNotFoundError:  # pragma: no cover
     httpx = None  # type: ignore[assignment]
     import json
     from urllib.request import urlopen
-from jose import JWTError, jwt
 
 CLOCK_SKEW_SECONDS = 60
 _REFRESH_INTERVAL_SECONDS = 300
+_GRACE_REFRESH_SECONDS = 60
+
+logger = logging.getLogger(__name__)
 
 _JWKSFetcher = Callable[[str], Mapping[str, Any]]
+
+
+class JWKSUnavailableError(RuntimeError):
+    """Raised when signing keys cannot be fetched and none are cached."""
+
+
+class OIDCUnavailableError(RuntimeError):
+    """Raised when OIDC verification cannot be performed due to key outages."""
+
+
+class DevelopmentSignatureError(JWTError):
+    """Raised when development JWT signatures cannot be verified."""
 
 
 def _fetch_jwks(url: str) -> Mapping[str, Any]:
@@ -71,7 +89,19 @@ class JWKSCache:
             self._previous_keys = {}
 
     def _refresh_locked(self) -> None:
-        payload = self._fetcher(self._jwks_url)
+        try:
+            payload = self._fetcher(self._jwks_url)
+        except Exception as exc:  # pragma: no cover - network failures are environment specific
+            if not self._current_keys:
+                raise JWKSUnavailableError("JWKS signing keys are unavailable") from exc
+            logger.warning(
+                "Failed to refresh JWKS keys; continuing with cached keys",
+                exc_info=exc,
+            )
+            grace = min(self._refresh_interval_seconds, _GRACE_REFRESH_SECONDS)
+            self._next_refresh = time.monotonic() + grace
+            return
+
         keys = payload.get("keys", [])
         if not isinstance(keys, Iterable):
             raise RuntimeError("OIDC JWKS payload invalid")
@@ -155,7 +185,10 @@ class OIDCAuthenticator:
             raise JWTError("Token missing 'kid' header")
 
         # Fetch key by kid, then decide algorithm from the KEY (not untrusted header).
-        key = self._jwks_cache.get_key(kid)
+        try:
+            key = self._jwks_cache.get_key(kid)
+        except JWKSUnavailableError as exc:
+            raise OIDCUnavailableError("JWKS signing keys are unavailable") from exc
         key_alg = key.get("alg")
         if not isinstance(key_alg, str) or key_alg not in self._ALLOWED_ALGS:
             # Some JWKS omit 'alg' per key; default by kty conservatively.
@@ -177,6 +210,7 @@ class OIDCAuthenticator:
             "require_exp": True,
             "require_iat": True,
             "require_nbf": True,
+            "leeway": self._clock_skew_seconds,
         }
 
         def _do_decode() -> Mapping[str, Any]:
@@ -187,7 +221,6 @@ class OIDCAuthenticator:
                 audience=self._audience,
                 issuer=self._issuer,
                 options=options,
-                leeway=self._clock_skew_seconds,
             )
 
         try:
@@ -195,7 +228,10 @@ class OIDCAuthenticator:
         except JWTError:
             # Attempt a forced refresh in case the JWKS rotated between requests.
             self._jwks_cache.reset()
-            key = self._jwks_cache.get_key(kid)
+            try:
+                key = self._jwks_cache.get_key(kid)
+            except JWKSUnavailableError as exc:  # pragma: no cover - exercised in integration tests
+                raise OIDCUnavailableError("JWKS signing keys are unavailable") from exc
             key_alg2 = key.get("alg") or key_alg
             claims = jwt.decode(
                 token,
@@ -204,7 +240,6 @@ class OIDCAuthenticator:
                 audience=self._audience,
                 issuer=self._issuer,
                 options=options,
-                leeway=self._clock_skew_seconds,
             )
 
         subject = claims.get("sub")
@@ -218,19 +253,33 @@ class OIDCAuthenticator:
 class DevelopmentJWTAuthenticator:
     """Validate HMAC-signed JWTs for non-production development flows."""
 
-    _ALLOWED_ALGS = ("HS256", "HS384", "HS512")
+    _ALLOWED_ALGS = ("HS256",)
 
     def __init__(
         self,
         *,
-        secrets: Tuple[str, ...],
-        issuer: str | None,
-        audience: str | None,
+        secrets: Tuple[bytes, ...],
+        issuer: str,
+        audience: str,
         clock_skew_seconds: int = CLOCK_SKEW_SECONDS,
     ) -> None:
         if not secrets:
             raise ValueError("at least one development secret must be provided")
-        self._secrets = secrets
+        if not issuer:
+            raise ValueError("issuer must be provided for development tokens")
+        if not audience:
+            raise ValueError("audience must be provided for development tokens")
+
+        normalized: Tuple[bytes, ...] = tuple(
+            secret if isinstance(secret, bytes) else secret.encode("utf-8") for secret in secrets
+        )
+        for index, secret in enumerate(normalized):
+            if len(secret) < 32:
+                raise ValueError(
+                    "development JWT secrets must be at least 32 bytes long"
+                    f" (secret #{index + 1})"
+                )
+        self._secrets = normalized
         self._issuer = issuer
         self._audience = audience
         self._clock_skew_seconds = max(0, clock_skew_seconds)
@@ -251,19 +300,17 @@ class DevelopmentJWTAuthenticator:
             "require_exp": True,
             "require_iat": True,
             "require_nbf": True,
-            "verify_aud": bool(self._audience),
-            "require_aud": bool(self._audience),
+            "verify_aud": True,
+            "require_aud": True,
+            "leeway": self._clock_skew_seconds,
         }
 
         kwargs: Dict[str, Any] = {
             "options": options,
             "algorithms": list(self._ALLOWED_ALGS),
-            "leeway": self._clock_skew_seconds,
+            "audience": self._audience,
+            "issuer": self._issuer,
         }
-        if self._audience:
-            kwargs["audience"] = self._audience
-        if self._issuer:
-            kwargs["issuer"] = self._issuer
 
         last_error: JWTError | None = None
         for secret in self._secrets:
@@ -279,8 +326,10 @@ class DevelopmentJWTAuthenticator:
             return OIDCClaims(subject=subject, scopes=scopes, claims=claims, kid=kid)
 
         if last_error is not None:
-            raise last_error
-        raise JWTError("Token could not be verified with development secrets")
+            if isinstance(last_error, (ExpiredSignatureError, JWTClaimsError)):
+                raise last_error
+            raise DevelopmentSignatureError("Development token signature verification failed") from last_error
+        raise DevelopmentSignatureError("Token could not be verified with development secrets")
 
 
 def _extract_scopes(claims: Mapping[str, Any]) -> frozenset[str]:
@@ -303,8 +352,11 @@ def _extract_scopes(claims: Mapping[str, Any]) -> frozenset[str]:
 __all__ = [
     "CLOCK_SKEW_SECONDS",
     "DevelopmentJWTAuthenticator",
+    "DevelopmentSignatureError",
     "OIDCAuthenticator",
     "OIDCClaims",
     "JWKSCache",
+    "JWKSUnavailableError",
+    "OIDCUnavailableError",
 ]
 

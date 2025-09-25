@@ -1,0 +1,14 @@
+rules:
+  - id: forbid-oidc-hmac
+    message: OIDC authenticators must not accept HS* algorithms
+    severity: ERROR
+    languages: [python]
+    patterns:
+      - pattern: "\"HS$x\""
+      - pattern-inside: |
+          class OIDCAuthenticator:
+              ...
+    metadata:
+      cwe: "CWE-327"
+      references:
+        - https://openid.net/specs/openid-connect-core-1_0.html

@@ -1,5 +1,23 @@
 """Security utilities for the options engine."""
 
-from .oidc import DevelopmentJWTAuthenticator, OIDCAuthenticator, OIDCClaims, JWKSCache
+from .oidc import (
+    CLOCK_SKEW_SECONDS,
+    DevelopmentJWTAuthenticator,
+    DevelopmentSignatureError,
+    OIDCAuthenticator,
+    OIDCClaims,
+    OIDCUnavailableError,
+    JWKSCache,
+    JWKSUnavailableError,
+)
 
-__all__ = ["DevelopmentJWTAuthenticator", "OIDCAuthenticator", "OIDCClaims", "JWKSCache"]
+__all__ = [
+    "CLOCK_SKEW_SECONDS",
+    "DevelopmentJWTAuthenticator",
+    "DevelopmentSignatureError",
+    "OIDCAuthenticator",
+    "OIDCClaims",
+    "OIDCUnavailableError",
+    "JWKSCache",
+    "JWKSUnavailableError",
+]

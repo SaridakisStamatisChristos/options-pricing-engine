@@ -14,7 +14,9 @@ playbooks for the Options Pricing Engine (OPE).
 ## Startup checklist
 
 1. Export required secrets (see [`README.md`](README.md)). Ensure `OIDC_ISSUER`,
-   `OIDC_AUDIENCE` and `OIDC_JWKS_URL` are present in production.
+   `OIDC_AUDIENCE` and `OIDC_JWKS_URL` are present in production. Confirm that
+   no `DEV_JWT_SECRET` or `DEV_JWT_ADDITIONAL_SECRETS` are set when
+   `OPE_ENVIRONMENT=production`.
 2. `uvicorn options_engine.api.fastapi_app:app --host 0.0.0.0 --port 8000`.
 3. Verify `/healthz` returns `status=ok`, the expected `environment` and
    non-null uptime.
@@ -37,7 +39,9 @@ PagerDuty or your preferred alert manager.
   (each entry includes a `request_id` and the authenticated `user` where
   available). Check upstream dependencies, especially the OIDC issuer, for
   outages. Watch `ope_auth_failures_total{reason="jwt_error"}` for spikes that
-  may signal clock drift or invalid tokens.
+  may signal clock drift or invalid tokens. A rise in
+  `ope_auth_failures_total{reason="jwks_unavailable"}` indicates JWKS fetch
+  issues; cached keys will continue to verify tokens after the first failure.
 * **`OPEHighLatencyP95`** – examine `ope_request_latency_seconds` per route and
   `ope_model_latency_seconds` to determine the bottlenecked pricing model.
   Inspect CPU utilisation; increase `OPE_THREADS` or scale horizontally if
@@ -76,6 +80,12 @@ document for five minutes while retaining the previously active key set.
 3. Remove the legacy key from the JWKS once monitoring confirms all tokens
    carry the new `kid`. The cache refresh interval is five minutes; trigger a
    manual refresh by clearing the FastAPI pod if necessary.
+
+When relying on the development HMAC fallback, rotate the secrets by deploying
+with the new value in `DEV_JWT_SECRET` and listing the previous secrets in
+`DEV_JWT_ADDITIONAL_SECRETS`. After all clients refresh their tokens remove the
+legacy values and redeploy. Using any development secret in production is treated
+as a misconfiguration and the application will refuse to start.
 
 ## Troubleshooting tips
 
