@@ -8,7 +8,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from numpy.random import Generator, SeedSequence
@@ -168,7 +168,7 @@ class BinomialModel:
 
             for index in range(steps - 1, -1, -1):
                 values = discount * (probability * values[1:] + (1.0 - probability) * values[:-1])
-                prices = prices[:-1] / up
+                prices = prices[:-1] / down
 
                 if contract.exercise_style is ExerciseStyle.AMERICAN:
                     if contract.option_type is OptionType.CALL:
@@ -299,3 +299,395 @@ class MonteCarloModel:
                 model_used=f"monte_carlo_{self.paths}",
                 error=str(exc),
             )
+
+
+def _default_basis_factories() -> Dict[str, Sequence[Callable[[np.ndarray], np.ndarray]]]:
+    """Return a dictionary describing the default LSMC basis candidates."""
+
+    def _constant(_: np.ndarray) -> np.ndarray:
+        return np.ones_like(_, dtype=float)
+
+    def _identity(x: np.ndarray) -> np.ndarray:
+        return x
+
+    def _square(x: np.ndarray) -> np.ndarray:
+        return x**2
+
+    def _cube(x: np.ndarray) -> np.ndarray:
+        return x**3
+
+    def _log(x: np.ndarray) -> np.ndarray:
+        return np.log(np.maximum(x, 1e-12))
+
+    def _sqrt(x: np.ndarray) -> np.ndarray:
+        return np.sqrt(np.maximum(x, 0.0))
+
+    return {
+        "polynomial_2": (_constant, _identity, _square),
+        "polynomial_3": (_constant, _identity, _square, _cube),
+        "log_linear": (_constant, _identity, _log),
+        "sqrt_polynomial": (_constant, _sqrt, _identity, _square),
+    }
+
+
+def _build_design_matrix(
+    basis: Sequence[Callable[[np.ndarray], np.ndarray]], values: np.ndarray
+) -> np.ndarray:
+    """Evaluate the provided basis functions and build the design matrix."""
+
+    columns: List[np.ndarray] = []
+    for function in basis:
+        evaluated = function(values)
+        if evaluated.ndim != 1:
+            evaluated = np.asarray(evaluated, dtype=float).reshape(-1)
+        columns.append(np.asarray(evaluated, dtype=float))
+    return np.column_stack(columns)
+
+
+def _information_criteria(rss: float, n: int, k: int) -> Tuple[float, float]:
+    """Compute the AIC and BIC for a linear regression fit."""
+
+    if n <= k or n == 0:
+        return float("inf"), float("inf")
+
+    variance = max(rss / n, 1e-16)
+    log_likelihood = -0.5 * n * (math.log(2.0 * math.pi) + math.log(variance) + 1.0)
+    aic = 2.0 * k - 2.0 * log_likelihood
+    bic = math.log(n) * k - 2.0 * log_likelihood
+    return float(aic), float(bic)
+
+
+def _kfold_indices(sample_size: int, folds: int, rng: np.random.Generator) -> List[np.ndarray]:
+    """Generate shuffled k-fold indices."""
+
+    folds = max(2, min(sample_size, folds))
+    indices = np.arange(sample_size)
+    rng.shuffle(indices)
+    return [fold for fold in np.array_split(indices, folds) if fold.size > 0]
+
+
+def _fit_linear_regression(design: np.ndarray, targets: np.ndarray) -> Tuple[np.ndarray, float]:
+    """Fit a linear regression returning coefficients and residual sum of squares."""
+
+    coefficients, residuals, rank, _ = np.linalg.lstsq(design, targets, rcond=None)
+    if residuals.size:
+        rss = float(residuals[0])
+    else:
+        predictions = design @ coefficients
+        rss = float(np.sum((targets - predictions) ** 2))
+    if rank < design.shape[1]:
+        rss = float("inf")
+    return coefficients, rss
+
+
+@dataclass(slots=True)
+class BasisMetrics:
+    """Diagnostics describing a fitted basis at a single exercise date."""
+
+    name: str
+    coefficients: np.ndarray
+    rss: float
+    aic: float
+    bic: float
+    cv_rmse: float
+
+
+@dataclass(slots=True)
+class ExercisePolicyStep:
+    """Summary of the extracted early exercise policy at a given time step."""
+
+    time_index: int
+    time: float
+    basis: Optional[BasisMetrics]
+    in_the_money: int
+    exercised: int
+    exercise_fraction: float
+    exercise_spot_mean: Optional[float]
+
+
+@dataclass(slots=True)
+class LSMCAnalysis:
+    """Container for diagnostics returned by the Longstaff-Schwartz model."""
+
+    pricing_result: PricingResult
+    policy: np.ndarray
+    policy_steps: List[ExercisePolicyStep]
+    basis_diagnostics: List[List[BasisMetrics]]
+    reference_price: float
+    reference_model_used: str
+    price_diff_bps: float
+
+
+@dataclass(slots=True)
+class LongstaffSchwartzModel:
+    """American option pricing using the Longstaff-Schwartz method with diagnostics."""
+
+    paths: int = 80_000
+    steps: int = 60
+    cv_folds: int = 5
+    antithetic: bool = True
+    seed_sequence: Optional[SeedSequence] = None
+    basis_factories: Optional[Dict[str, Sequence[Callable[[np.ndarray], np.ndarray]]]] = None
+    reference_steps: int = 2_000
+
+    def _prepare_paths(
+        self,
+        contract: OptionContract,
+        market_data: MarketData,
+        volatility: float,
+        rng: Generator,
+    ) -> Tuple[np.ndarray, np.ndarray, float]:
+        """Simulate price paths under the risk-neutral measure."""
+
+        time_to_expiry = contract.time_to_expiry
+        step_count = max(1, int(self.steps))
+        dt = time_to_expiry / step_count
+        sqrt_dt = math.sqrt(dt)
+
+        path_count = max(1, int(self.paths))
+        if self.antithetic:
+            path_count = max(2, path_count + (path_count % 2))
+            half = path_count // 2
+            base_draws = rng.standard_normal((step_count, half))
+            draws = np.concatenate([base_draws, -base_draws], axis=1)
+        else:
+            draws = rng.standard_normal((step_count, path_count))
+            path_count = draws.shape[1]
+
+        prices = np.empty((step_count + 1, path_count), dtype=float)
+        prices[0, :] = market_data.spot_price
+
+        drift = (market_data.risk_free_rate - market_data.dividend_yield - 0.5 * volatility**2) * dt
+        diffusion = volatility * sqrt_dt
+
+        for index in range(1, step_count + 1):
+            shock = diffusion * draws[index - 1, :]
+            prices[index, :] = prices[index - 1, :] * np.exp(drift + shock)
+
+        times = np.linspace(0.0, time_to_expiry, step_count + 1)
+        discount = math.exp(-market_data.risk_free_rate * dt)
+        return prices, times, discount
+
+    def _intrinsic_value(self, contract: OptionContract, prices: np.ndarray) -> np.ndarray:
+        """Return intrinsic values for the provided price vector."""
+
+        if contract.option_type is OptionType.CALL:
+            return np.maximum(prices - contract.strike_price, 0.0)
+        return np.maximum(contract.strike_price - prices, 0.0)
+
+    def _evaluate_basis(
+        self,
+        basis_name: str,
+        basis_functions: Sequence[Callable[[np.ndarray], np.ndarray]],
+        features: np.ndarray,
+        targets: np.ndarray,
+        folds: int,
+        rng: np.random.Generator,
+    ) -> BasisMetrics:
+        """Fit a regression basis computing AIC/BIC and cross-validation RMSE."""
+
+        design = _build_design_matrix(basis_functions, features)
+        coefficients, rss = _fit_linear_regression(design, targets)
+
+        sample_size = features.size
+        parameters = design.shape[1]
+        aic, bic = _information_criteria(rss, sample_size, parameters)
+
+        cv_indices = _kfold_indices(sample_size, folds, rng)
+        sq_errors: List[float] = []
+        for fold in cv_indices:
+            train_mask = np.ones(sample_size, dtype=bool)
+            train_mask[fold] = False
+            if not train_mask.any():
+                continue
+            train_design = design[train_mask]
+            train_targets = targets[train_mask]
+            test_design = design[~train_mask]
+            test_targets = targets[~train_mask]
+            if train_design.size == 0 or test_design.size == 0:
+                continue
+            fold_coefficients, _ = _fit_linear_regression(train_design, train_targets)
+            predictions = test_design @ fold_coefficients
+            sq_errors.append(float(np.mean((test_targets - predictions) ** 2)))
+
+        if sq_errors:
+            cv_rmse = float(math.sqrt(max(0.0, float(np.mean(sq_errors)))))
+        else:
+            cv_rmse = float("inf")
+
+        return BasisMetrics(
+            name=basis_name,
+            coefficients=coefficients,
+            rss=rss,
+            aic=aic,
+            bic=bic,
+            cv_rmse=cv_rmse,
+        )
+
+    def price_with_diagnostics(
+        self,
+        contract: OptionContract,
+        market_data: MarketData,
+        volatility: float,
+        *,
+        seed_sequence: Optional[SeedSequence] = None,
+    ) -> LSMCAnalysis:
+        """Run the Longstaff-Schwartz algorithm returning diagnostics."""
+
+        if contract.exercise_style is not ExerciseStyle.AMERICAN:
+            raise ValueError("Longstaff-Schwartz model requires an American option contract")
+
+        validate_pricing_parameters(contract, market_data, volatility)
+
+        start = time.perf_counter()
+
+        basis_factories = self.basis_factories or _default_basis_factories()
+        if not basis_factories:
+            raise ValueError("At least one basis must be provided for LSMC")
+
+        sequence = seed_sequence or self.seed_sequence
+        rng = _thread_local_generator(sequence)
+        diagnostic_rng = np.random.default_rng(42)
+
+        prices, times, discount = self._prepare_paths(contract, market_data, volatility, rng)
+        step_count, path_count = prices.shape[0] - 1, prices.shape[1]
+
+        intrinsic_maturity = self._intrinsic_value(contract, prices[-1, :])
+        cashflows = intrinsic_maturity.copy()
+
+        policy = np.zeros((step_count + 1, path_count), dtype=bool)
+        policy[-1, :] = intrinsic_maturity > 0.0
+
+        basis_diagnostics: List[List[BasisMetrics]] = []
+        policy_steps: List[ExercisePolicyStep] = []
+
+        strike = contract.strike_price
+
+        for step in range(step_count - 1, -1, -1):
+            spot = prices[step, :]
+            intrinsic = self._intrinsic_value(contract, spot)
+            in_the_money = intrinsic > 0.0
+
+            continuation = discount * cashflows
+            evaluated_bases: List[BasisMetrics] = []
+            selected: Optional[BasisMetrics] = None
+
+            if np.any(in_the_money):
+                features = spot[in_the_money] / strike
+                targets = continuation[in_the_money]
+                for name, basis_functions in basis_factories.items():
+                    try:
+                        metrics = self._evaluate_basis(
+                            name,
+                            basis_functions,
+                            features,
+                            targets,
+                            self.cv_folds,
+                            diagnostic_rng,
+                        )
+                    except np.linalg.LinAlgError:
+                        continue
+                    evaluated_bases.append(metrics)
+
+                basis_diagnostics.append(evaluated_bases)
+
+                if evaluated_bases:
+                    valid_bases = [
+                        metrics
+                        for metrics in evaluated_bases
+                        if math.isfinite(metrics.cv_rmse)
+                        and math.isfinite(metrics.aic)
+                        and math.isfinite(metrics.bic)
+                    ]
+                    if valid_bases:
+                        valid_bases.sort(key=lambda m: (m.cv_rmse, m.bic))
+                        selected = valid_bases[0]
+
+            else:
+                basis_diagnostics.append([])
+
+            exercised_paths = np.zeros(path_count, dtype=bool)
+            exercise_mean: Optional[float] = None
+
+            if selected is not None:
+                basis_functions = basis_factories[selected.name]
+                design = _build_design_matrix(basis_functions, spot[in_the_money] / strike)
+                predictions = design @ selected.coefficients
+                exercise_region = intrinsic[in_the_money] >= predictions
+
+                in_money_indices = np.flatnonzero(in_the_money)
+                exercised_indices = in_money_indices[exercise_region]
+                exercised_paths[exercised_indices] = True
+                if exercised_indices.size:
+                    exercise_mean = float(np.mean(spot[exercised_indices]))
+
+            policy[step, exercised_paths] = True
+
+            exercise_count = int(np.count_nonzero(exercised_paths))
+            if exercise_count:
+                cashflows[exercised_paths] = intrinsic[exercised_paths]
+            cashflows[~exercised_paths] = continuation[~exercised_paths]
+
+            policy_steps.append(
+                ExercisePolicyStep(
+                    time_index=step,
+                    time=times[step],
+                    basis=selected,
+                    in_the_money=int(np.count_nonzero(in_the_money)),
+                    exercised=exercise_count,
+                    exercise_fraction=(exercise_count / path_count) if path_count else 0.0,
+                    exercise_spot_mean=exercise_mean,
+                )
+            )
+
+        price = float(np.mean(cashflows))
+        if path_count > 1:
+            std_err = float(np.std(cashflows, ddof=1) / math.sqrt(path_count))
+        else:
+            std_err = 0.0
+
+        binomial_model = BinomialModel(steps=self.reference_steps)
+        reference = binomial_model.calculate_price(contract, market_data, volatility)
+        reference_price = reference.theoretical_price
+        price_diff_bps = (price - reference_price) / max(reference_price, 1e-12) * 10_000.0
+
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+
+        pricing_result = PricingResult(
+            contract_id=contract.contract_id,
+            theoretical_price=max(0.0, price),
+            implied_volatility=volatility,
+            computation_time_ms=elapsed_ms,
+            model_used=f"lsmc_{path_count}x{step_count}",
+            standard_error=std_err,
+        )
+
+        policy_steps.reverse()
+
+        return LSMCAnalysis(
+            pricing_result=pricing_result,
+            policy=policy,
+            policy_steps=policy_steps,
+            basis_diagnostics=basis_diagnostics[::-1],
+            reference_price=reference_price,
+            reference_model_used=reference.model_used,
+            price_diff_bps=float(price_diff_bps),
+        )
+
+    def calculate_price(
+        self,
+        contract: OptionContract,
+        market_data: MarketData,
+        volatility: float,
+        *,
+        seed_sequence: Optional[SeedSequence] = None,
+    ) -> PricingResult:
+        """Return a :class:`PricingResult` for the LSMC model."""
+
+        analysis = self.price_with_diagnostics(
+            contract,
+            market_data,
+            volatility,
+            seed_sequence=seed_sequence,
+        )
+        return analysis.pricing_result
