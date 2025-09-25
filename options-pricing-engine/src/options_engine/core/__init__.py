@@ -6,6 +6,11 @@ from .pricing_models import (
     LSMCAnalysis,
     LongstaffSchwartzModel,
 )
+from .variance_reduction import (
+    VarianceReductionDiagnostics,
+    VarianceReductionReport,
+    VarianceReductionToolkit,
+)
 
 from .vol_surface_calibration import (
     ArbitrageCheckResult,
@@ -35,5 +40,8 @@ __all__ = [
     "ExercisePolicyStep",
     "LSMCAnalysis",
     "LongstaffSchwartzModel",
+    "VarianceReductionDiagnostics",
+    "VarianceReductionReport",
+    "VarianceReductionToolkit",
 ]
 
