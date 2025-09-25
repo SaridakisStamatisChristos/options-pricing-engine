@@ -95,6 +95,8 @@ LATENCY_ENV_VARS = {
 }
 
 BASELINE_PATH = Path(__file__).with_name("benchmarks_baseline.json")
+REPORT_PATH = Path(__file__).with_name("benchmarks_report.json")
+UPDATE_BASELINE = os.environ.get("UPDATE_BASELINE", "0") == "1"
 
 EPS_PRICE = 1e-6
 CI_Z_SCORE = 1.96
@@ -104,6 +106,47 @@ PRECISION_BUCKETS = {
     "B": {"lower": 0.10, "upper": 0.50, "threshold": 10.0, "cap": 65_536},
     "C": {"lower": 0.0, "upper": 0.10, "threshold": 0.0005, "cap": 262_144},
 }
+
+
+_LATENCY_RESULTS: dict[str, dict[str, float]] = {}
+_PRECISION_RESULTS: dict[str, object] | None = None
+
+
+def _record_latency_summary(model_key: str, metrics: dict[str, object]) -> None:
+    _LATENCY_RESULTS[model_key] = {
+        "p50_latency_ms": float(metrics["p50_latency_ms"]),
+        "p95_latency_ms": float(metrics["p95_latency_ms"]),
+        "p99_latency_ms": float(metrics["p99_latency_ms"]),
+    }
+
+
+def _record_precision_summary(metrics: dict[str, object]) -> None:
+    global _PRECISION_RESULTS
+    _PRECISION_RESULTS = metrics
+
+
+def _write_benchmarks_report() -> None:
+    if _PRECISION_RESULTS is None:
+        return
+
+    report: dict[str, object] = {}
+    for model_key, summary in _LATENCY_RESULTS.items():
+        report[model_key] = dict(summary)
+
+    precision = _PRECISION_RESULTS.get("monte_carlo")
+    if isinstance(precision, dict):
+        monte_carlo_entry = report.setdefault("monte_carlo", {})
+        for key, value in precision.items():
+            if key in {"cell_metrics"}:
+                continue
+            monte_carlo_entry[key] = value
+        if "cell_metrics" in precision:
+            monte_carlo_entry["cell_metrics"] = precision["cell_metrics"]
+
+    target_path = BASELINE_PATH if UPDATE_BASELINE else REPORT_PATH
+    with target_path.open("w", encoding="utf-8") as handle:
+        json.dump(report, handle, indent=2, sort_keys=True)
+        handle.write("\n")
 
 
 @pytest.fixture(scope="module")
@@ -435,16 +478,32 @@ def _precision_benchmark(
             if cell.cell_price and cell.cell_price >= EPS_PRICE:
                 all_bps.append(10_000.0 * cell.ci_abs / cell.cell_price)
 
-    metrics: dict[str, object] = {
-        "monte_carlo": {
-            "median_ci_bps_bucket_A": float(median(bucket_values["A"])) if bucket_values["A"] else None,
-            "median_ci_bps_bucket_B": float(median(bucket_values["B"])) if bucket_values["B"] else None,
-            "median_ci_abs_bucket_C": float(median(bucket_values["C"])) if bucket_values["C"] else None,
-            "bucket_counts": bucket_counts,
-            "median_ci_bps_all_cells": float(median(all_bps)) if all_bps else None,
-        },
+    total_bucket_count = sum(bucket_counts.values())
+    assert total_bucket_count > 0, "No precision buckets populated"
+    for bucket_name in ("A", "B", "C"):
+        assert (
+            bucket_values[bucket_name]
+        ), f"No precision data collected for bucket {bucket_name}"
+
+    ci_bps_values = [value for value in all_bps if value is not None]
+    all_ci_abs = [cell.ci_abs for cell in cell_results if cell.ci_abs is not None]
+    paths_used_values = [cell.paths_used for cell in cell_results]
+    combined_bucket_bps = bucket_values["A"] + bucket_values["B"]
+
+    assert ci_bps_values, "No CI (bps) values captured"
+    assert all_ci_abs, "No CI half-width values captured"
+    assert combined_bucket_bps, "No CI (bps) values captured for buckets A/B"
+
+    monte_carlo_metrics: dict[str, object] = {
+        "median_ci_bps_bucket_A": float(median(bucket_values["A"])),
+        "median_ci_bps_bucket_B": float(median(bucket_values["B"])),
+        "median_ci_abs_bucket_C": float(median(bucket_values["C"])),
+        "bucket_counts": dict(bucket_counts),
+        "median_ci_bps_all_cells": float(median(ci_bps_values)),
+        "median_ci_half_width": float(median(all_ci_abs)),
+        "median_ci_bps": float(median(combined_bucket_bps)),
+        "paths_used": int(median(paths_used_values)) if paths_used_values else None,
         "cell_metrics": [],
-        "worst_cells": [],
     }
 
     for cell in cell_results:
@@ -458,7 +517,7 @@ def _precision_benchmark(
             "vr_pipeline": cell.vr_pipeline,
         }
         cell_entry.update(cell.cv_summary)
-        metrics["cell_metrics"].append(cell_entry)
+        monte_carlo_metrics["cell_metrics"].append(cell_entry)
 
     worst_cells: list[dict[str, object]] = []
     for bucket in ("A", "B", "C"):
@@ -481,7 +540,7 @@ def _precision_benchmark(
             }
             entry.update(cell.cv_summary)
             worst_cells.append(entry)
-    metrics["worst_cells"] = worst_cells
+    monte_carlo_metrics["worst_cells"] = worst_cells
 
     subset_count = min(5, len(scenarios))
     baseline_model = MonteCarloModel(paths=initial_paths, antithetic=False)
@@ -510,14 +569,14 @@ def _precision_benchmark(
 
     if baseline_prices_all and vr_prices_all:
         t_stat = stats.ttest_ind(vr_prices_all, baseline_prices_all, equal_var=False)
-        metrics["monte_carlo"]["bias_test"] = {
+        monte_carlo_metrics["bias_test"] = {
             "p_value": float(t_stat.pvalue),
             "vr_mean": float(np.mean(vr_prices_all)),
             "baseline_mean": float(np.mean(baseline_prices_all)),
             "sample_size": len(vr_prices_all),
         }
 
-    return metrics
+    return {"monte_carlo": monte_carlo_metrics}
 
 
 def _print_latency_summary(model_key: str, metrics: dict[str, object], baseline: dict[str, float]) -> None:
@@ -557,6 +616,7 @@ def test_black_scholes_latency_gate(
 ) -> None:
     metrics = _latency_benchmark("black_scholes", BlackScholesModel(), golden_grid)
     _print_latency_summary("black_scholes", metrics, benchmark_baseline["black_scholes"])
+    _record_latency_summary("black_scholes", metrics)
     assert metrics["p99_latency_ms"] <= PERF_TARGETS["black_scholes"]
 
 
@@ -565,6 +625,7 @@ def test_binomial_latency_gate(
 ) -> None:
     metrics = _latency_benchmark("binomial", BinomialModel(), golden_grid)
     _print_latency_summary("binomial", metrics, benchmark_baseline["binomial"])
+    _record_latency_summary("binomial", metrics)
     assert metrics["p99_latency_ms"] <= PERF_TARGETS["binomial"]
 
 
@@ -579,26 +640,44 @@ def test_monte_carlo_latency_gate(
         seed_prefix=2024,
     )
     _print_latency_summary("monte_carlo", metrics, benchmark_baseline["monte_carlo"])
+    _record_latency_summary("monte_carlo", metrics)
     assert metrics["p99_latency_ms"] <= PERF_TARGETS["monte_carlo"]
 
 
 def test_monte_carlo_precision_gate(golden_grid: List[BenchmarkScenario]) -> None:
     metrics = _precision_benchmark(golden_grid)
     _print_precision_summary(metrics)
+    _record_precision_summary(metrics)
+    _write_benchmarks_report()
 
     monte_carlo = metrics["monte_carlo"]
-    assert monte_carlo["median_ci_bps_bucket_A"] is None or monte_carlo["median_ci_bps_bucket_A"] <= 2.0
-    assert monte_carlo["median_ci_bps_bucket_B"] is None or monte_carlo["median_ci_bps_bucket_B"] <= 10.0
-    assert monte_carlo["median_ci_abs_bucket_C"] is None or monte_carlo["median_ci_abs_bucket_C"] <= 0.0005
+    for key in (
+        "median_ci_bps_bucket_A",
+        "median_ci_bps_bucket_B",
+        "median_ci_abs_bucket_C",
+    ):
+        assert key in monte_carlo, f"Missing precision metric: {key}"
+        value = monte_carlo[key]
+        assert isinstance(value, (int, float)), f"Precision metric {key} is not numeric"
+        assert math.isfinite(float(value)), f"Precision metric {key} is not finite"
+
+    bucket_counts = monte_carlo.get("bucket_counts")
+    assert isinstance(bucket_counts, dict), "bucket_counts missing"
+    total_buckets = sum(bucket_counts.get(name, 0) for name in ("A", "B", "C"))
+    assert total_buckets > 0
+
+    assert monte_carlo["median_ci_bps_bucket_A"] <= 2.0
+    assert monte_carlo["median_ci_bps_bucket_B"] <= 10.0
+    assert monte_carlo["median_ci_abs_bucket_C"] <= 0.0005
 
     bias = monte_carlo.get("bias_test")
     assert isinstance(bias, dict) and bias.get("p_value", 0.0) > 0.05
 
-    worst_cells = metrics.get("worst_cells")
+    worst_cells = monte_carlo.get("worst_cells")
     assert isinstance(worst_cells, list)
     assert len(worst_cells) <= 15
 
-    for cell in metrics["cell_metrics"]:
+    for cell in monte_carlo.get("cell_metrics", []):
         if cell.get("cv_used"):
             raw_var = cell.get("raw_var")
             residual_var = cell.get("residual_var")
