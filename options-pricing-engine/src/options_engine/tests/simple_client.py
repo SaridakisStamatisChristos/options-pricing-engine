@@ -94,6 +94,7 @@ class SimpleTestClient(AbstractContextManager["SimpleTestClient"]):
             else:
                 header_items[key] = value
         header_items.setdefault("host", "testserver")
+        header_items.setdefault("accept", "application/json")
         header_items.setdefault("content-length", str(len(body)))
         scope = {
             "type": "http",
@@ -104,16 +105,27 @@ class SimpleTestClient(AbstractContextManager["SimpleTestClient"]):
             "query_string": b"",
             "headers": [(k.lower().encode(), v.encode()) for k, v in header_items.items()],
             "client": ("testclient", 0),
+            "server": ("testserver", 80),
+            "scheme": "http",
+            "root_path": "",
+            "asgi": {"version": "3.0", "spec_version": "2.3"},
+            "state": {},
         }
 
         response_headers: list[tuple[bytes, bytes]] = []
         response_status = 500
         body_parts: list[bytes] = []
         body_sent = False
+        disconnect_sent = False
+        disconnect_event = asyncio.Event()
 
         async def receive() -> Mapping[str, Any]:
-            nonlocal body_sent
+            nonlocal body_sent, disconnect_sent
             if body_sent:
+                if not disconnect_sent:
+                    await disconnect_event.wait()
+                    disconnect_sent = True
+                    return {"type": "http.disconnect"}
                 await asyncio.sleep(0)
                 return {"type": "http.disconnect"}
             body_sent = True
@@ -125,9 +137,14 @@ class SimpleTestClient(AbstractContextManager["SimpleTestClient"]):
                 response_status = message["status"]
                 response_headers.extend(message.get("headers", []))
             elif message["type"] == "http.response.body":
-                body_parts.append(message.get("body", b""))
+                chunk = message.get("body", b"") or b""
+                body_parts.append(bytes(chunk))
+                if not message.get("more_body", False):
+                    disconnect_event.set()
 
         await self._app(scope, receive, send)
+        if not disconnect_event.is_set():
+            disconnect_event.set()
         headers_dict: Dict[str, str] = {}
         for key, value in response_headers:
             decoded_key = key.decode().lower()
