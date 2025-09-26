@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import time
@@ -14,8 +15,13 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from fastapi import APIRouter, Body, FastAPI, HTTPException, Path as PathParam, Response
 from pydantic import ValidationError
 
-from ..core.models import ExerciseStyle, MarketData, OptionContract, OptionType
-from ..core.pricing_models import BinomialModel, BlackScholesModel, MonteCarloModel
+from ..core.models import ExerciseStyle, MarketData, OptionContract, OptionType, PricingResult
+from ..core.pricing_models import (
+    BinomialModel,
+    BlackScholesModel,
+    MonteCarloModel,
+    american_lsmc_price,
+)
 from .capsule import (
     CAPSULE_STORE,
     DEFAULT_BUILD_ID,
@@ -258,33 +264,84 @@ def _execute_quote(
         ci = None
     elif family == "monte_carlo":
         plan = _plan_monte_carlo(request)
-        model_used["params"].update(
-            {
-                "paths": plan.paths,
-                "antithetic": plan.antithetic,
-                "use_qmc": plan.use_qmc,
-                "use_cv": plan.use_cv,
-            }
-        )
-        seed_sequence = lineage_to_seed_sequence(seed_lineage)
-        model = MonteCarloModel(
-            paths=plan.paths,
-            antithetic=plan.antithetic,
-            seed_sequence=seed_sequence,
-            use_control_variates=plan.use_cv,
-        )
-        result = model.calculate_price(
-            contract,
-            market,
-            request.volatility,
-            seed_sequence=seed_sequence,
-        )
-        ci = _confidence_interval(
-            result.theoretical_price,
-            result.standard_error,
-            paths_used=plan.paths,
-            vr_pipeline=_describe_vr_pipeline(plan),
-        )
+        if contract.exercise_style is ExerciseStyle.AMERICAN:
+            steps = params.steps if params and params.steps is not None else 64
+            paths = plan.paths
+            if params and params.seed_prefix:
+                seed_material = f"{params.seed_prefix}:{seed_lineage}"
+            else:
+                seed_material = seed_lineage
+            seed = int.from_bytes(hashlib.blake2b(seed_material.encode("utf-8"), digest_size=8).digest(), "big")
+            lsmc_result = american_lsmc_price(
+                spot=market.spot_price,
+                strike=contract.strike_price,
+                tau=contract.time_to_expiry,
+                sigma=request.volatility,
+                r=market.risk_free_rate,
+                q=market.dividend_yield,
+                option_type="call" if contract.option_type is OptionType.CALL else "put",
+                steps=int(steps),
+                paths=int(paths),
+                seed=int(seed),
+                antithetic=True,
+                use_cv=True,
+            )
+            price = safe_float(lsmc_result.price)
+            half_width_abs = safe_float(lsmc_result.ci_half_width)
+            denominator = max(abs(price), 1e-6)
+            half_width_bps = safe_float(10_000.0 * half_width_abs / denominator)
+            ci = ConfidenceInterval(
+                half_width_abs=half_width_abs,
+                half_width_bps=half_width_bps,
+                paths_used=int(paths),
+                vr_pipeline=_describe_vr_pipeline(
+                    MonteCarloPlan(paths=int(paths), antithetic=True, use_qmc=False, use_cv=True)
+                ),
+            )
+            result = PricingResult(
+                contract_id=contract.contract_id,
+                theoretical_price=price,
+                standard_error=lsmc_result.standard_error,
+                model_used="american_lsmc",
+            )
+            model_used["params"].update(
+                {
+                    "paths": int(paths),
+                    "steps": int(steps),
+                    "antithetic": True,
+                    "use_qmc": False,
+                    "use_cv": True,
+                }
+            )
+            model_used["meta"] = lsmc_result.meta
+        else:
+            model_used["params"].update(
+                {
+                    "paths": plan.paths,
+                    "antithetic": plan.antithetic,
+                    "use_qmc": plan.use_qmc,
+                    "use_cv": plan.use_cv,
+                }
+            )
+            seed_sequence = lineage_to_seed_sequence(seed_lineage)
+            model = MonteCarloModel(
+                paths=plan.paths,
+                antithetic=plan.antithetic,
+                seed_sequence=seed_sequence,
+                use_control_variates=plan.use_cv,
+            )
+            result = model.calculate_price(
+                contract,
+                market,
+                request.volatility,
+                seed_sequence=seed_sequence,
+            )
+            ci = _confidence_interval(
+                result.theoretical_price,
+                result.standard_error,
+                paths_used=plan.paths,
+                vr_pipeline=_describe_vr_pipeline(plan),
+            )
     else:  # pragma: no cover - defensive programming
         raise http_error(VALIDATION_ERROR)
 
