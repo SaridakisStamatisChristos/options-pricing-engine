@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from typing import List, Optional, Tuple
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class PricingResultResponse(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     contract_id: str
     theoretical_price: float
     delta: Optional[float] = None
