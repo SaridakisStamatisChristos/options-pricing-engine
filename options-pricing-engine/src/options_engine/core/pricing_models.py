@@ -15,6 +15,19 @@ from scipy.stats import norm
 
 from .models import ExerciseStyle, MarketData, OptionContract, OptionType, PricingResult
 from .replay import ReplayCapsule, build_replay_capsule
+from ..greeks.estimators import (
+    aggregate_statistics,
+    finite_difference_delta,
+    finite_difference_gamma,
+    finite_difference_rho,
+    finite_difference_vega,
+    GreekSummary,
+    pathwise_delta,
+    pathwise_gamma,
+    pathwise_vega,
+    rho_likelihood_ratio,
+)
+from ..greeks.stability import contributions_finite, is_estimate_unstable
 from ..utils.validation import validate_pricing_parameters
 
 LOGGER = logging.getLogger(__name__)
@@ -584,7 +597,9 @@ class MonteCarloModel:
                     theoretical_price=max(0.0, price),
                     delta=delta,
                     gamma=gamma,
+                    theta=_theta,
                     vega=vega,
+                    rho=_rho,
                     computation_time_ms=elapsed_ms,
                     model_used=f"monte_carlo_{simulation_paths}",
                     implied_volatility=volatility,
@@ -630,43 +645,215 @@ class MonteCarloModel:
                 cv_report = None
             theoretical_price = float(np.mean(adjusted_payoffs))
 
-            sqrt_time = time_sqrt
-            if contract.option_type is OptionType.CALL:
-                indicator = terminal_prices > contract.strike_price
-                delta_path = discount_factor * np.where(
-                    indicator, terminal_prices / market_data.spot_price, 0.0
-                )
-                sensitivity_term = terminal_prices * (
-                    sqrt_time * draws - volatility * contract.time_to_expiry
-                )
-                vega_path = discount_factor * np.where(indicator, sensitivity_term, 0.0)
-            else:
-                indicator = terminal_prices < contract.strike_price
-                delta_path = -discount_factor * np.where(
-                    indicator, terminal_prices / market_data.spot_price, 0.0
-                )
-                sensitivity_term = -terminal_prices * (
-                    sqrt_time * draws - volatility * contract.time_to_expiry
-                )
-                vega_path = discount_factor * np.where(indicator, sensitivity_term, 0.0)
+            greeks_ci: dict[str, Dict[str, float]] = {}
+            greeks_meta: dict[str, Dict[str, object]] = {}
+            greek_values: dict[str, float] = {}
 
-            drift_term = (
-                np.log(terminal_prices / market_data.spot_price)
-                - (market_data.risk_free_rate - market_data.dividend_yield - 0.5 * volatility**2)
-                * contract.time_to_expiry
+            price_guard = max(0.0, theoretical_price)
+            vr_pipeline = "cv" if self.use_control_variates else "plain"
+            bs_reference: Optional[Dict[str, float]] = None
+
+            def _ensure_bs_reference() -> Dict[str, float]:
+                nonlocal bs_reference
+                if bs_reference is not None:
+                    return bs_reference
+                if contract.exercise_style is not ExerciseStyle.EUROPEAN:
+                    bs_reference = {}
+                    return bs_reference
+                try:
+                    _, d_ref, g_ref, t_ref, v_ref, r_ref = _black_scholes_greeks(
+                        contract, market_data, volatility
+                    )
+                except Exception:  # pragma: no cover - safeguard
+                    bs_reference = {}
+                else:
+                    bs_reference = {
+                        "delta": float(d_ref),
+                        "gamma": float(g_ref),
+                        "theta": float(t_ref),
+                        "vega": float(v_ref),
+                        "rho": float(r_ref),
+                    }
+                return bs_reference
+
+            def _register_greek(
+                name: str,
+                method: str,
+                summary: "GreekSummary",
+                fallback_factory: Optional[Callable[[], "GreekSummary"]] = None,
+                value_transform: Optional[Callable[["GreekSummary"], float]] = None,
+            ) -> "GreekSummary":
+                transform = value_transform or (lambda item: float(item.value))
+                fallback_summary: Optional["GreekSummary"] = None
+                use_summary = summary
+                if fallback_factory is not None:
+                    needs_fallback = (
+                        not contributions_finite(summary.contributions)
+                        or is_estimate_unstable(transform(summary), summary.half_width_abs, price_guard)
+                    )
+                    if needs_fallback:
+                        fallback_summary = fallback_factory()
+                        use_summary = fallback_summary
+                final_value = transform(use_summary)
+                greek_values[name] = final_value
+                greeks_ci[name] = {
+                    "standard_error": float(use_summary.standard_error),
+                    "half_width_abs": float(use_summary.half_width_abs),
+                }
+                meta: Dict[str, object] = {
+                    "method": method if fallback_summary is None else "fd",
+                    "paths_used": int(use_summary.contributions.size),
+                    "vr_pipeline": vr_pipeline,
+                    "fallback": None if fallback_summary is None else "fd",
+                }
+                if fallback_summary is not None:
+                    meta["primary_method"] = method
+                    reference = _ensure_bs_reference()
+                    if name in reference:
+                        reference_value = reference[name]
+                        denominator = max(abs(reference_value), 1e-4)
+                        rel_error = abs(final_value - reference_value) / denominator
+                        meta["fd_rel_error"] = float(rel_error)
+                        if rel_error > 0.1:
+                            meta["unstable_fd"] = True
+                greeks_meta[name] = meta
+                return use_summary
+
+            delta_summary = aggregate_statistics(
+                pathwise_delta(
+                    contract,
+                    market_data,
+                    discount_factor=discount_factor,
+                    terminal_prices=terminal_prices,
+                )
             )
-            spot = market_data.spot_price
-            sigma_sq_t = max(volatility**2 * contract.time_to_expiry, 1e-18)
-            inv_spot_sigma_sq_t = 1.0 / (spot * sigma_sq_t)
-            inv_spot_sq_sigma_sq_t = 1.0 / (spot**2 * sigma_sq_t)
-            likelihood_ratio = drift_term * inv_spot_sigma_sq_t
-            gamma_path = discount_factor * payoff * (
-                likelihood_ratio**2 - (1.0 + drift_term) * inv_spot_sq_sigma_sq_t
+            delta_used = _register_greek(
+                "delta",
+                "pathwise",
+                delta_summary,
+                lambda: finite_difference_delta(
+                    contract,
+                    market_data,
+                    volatility=volatility,
+                    time_to_expiry=contract.time_to_expiry,
+                    draws=draws,
+                    discounted_payoffs=discounted_payoffs,
+                ),
             )
 
-            delta_estimate = float(np.mean(delta_path))
-            gamma_estimate = float(np.mean(gamma_path))
-            vega_estimate = float(np.mean(vega_path) / 100.0)
+            gamma_summary = aggregate_statistics(
+                pathwise_gamma(
+                    contract,
+                    market_data,
+                    discount_factor=discount_factor,
+                    terminal_prices=terminal_prices,
+                    volatility=volatility,
+                    time_to_expiry=contract.time_to_expiry,
+                )
+            )
+            gamma_used = _register_greek(
+                "gamma",
+                "pathwise_lr",
+                gamma_summary,
+                lambda: finite_difference_gamma(
+                    contract,
+                    market_data,
+                    volatility=volatility,
+                    time_to_expiry=contract.time_to_expiry,
+                    draws=draws,
+                    discounted_payoffs=discounted_payoffs,
+                ),
+            )
+
+            vega_summary = aggregate_statistics(
+                pathwise_vega(
+                    contract,
+                    market_data,
+                    discount_factor=discount_factor,
+                    terminal_prices=terminal_prices,
+                    volatility=volatility,
+                    time_to_expiry=contract.time_to_expiry,
+                    draws=draws,
+                )
+            )
+            _register_greek(
+                "vega",
+                "pathwise",
+                vega_summary,
+                lambda: finite_difference_vega(
+                    contract,
+                    market_data,
+                    volatility=volatility,
+                    time_to_expiry=contract.time_to_expiry,
+                    draws=draws,
+                    discounted_payoffs=discounted_payoffs,
+                ),
+            )
+
+            drift_rate = market_data.risk_free_rate - market_data.dividend_yield
+            theta_contributions = (
+                drift_rate * market_data.spot_price * delta_used.contributions
+                + 0.5 * volatility**2 * (market_data.spot_price**2) * gamma_used.contributions
+                - market_data.risk_free_rate * discounted_payoffs
+            ) / 365.0
+            theta_summary = aggregate_statistics(theta_contributions)
+            _register_greek(
+                "theta",
+                "pde",
+                theta_summary,
+            )
+
+            rho_summary = aggregate_statistics(
+                rho_likelihood_ratio(
+                    contract,
+                    market_data,
+                    payoff=payoff,
+                    discount_factor=discount_factor,
+                    terminal_prices=terminal_prices,
+                    volatility=volatility,
+                    time_to_expiry=contract.time_to_expiry,
+                )
+            )
+            _register_greek(
+                "rho",
+                "lr",
+                rho_summary,
+                lambda: finite_difference_rho(
+                    contract,
+                    market_data,
+                    volatility=volatility,
+                    time_to_expiry=contract.time_to_expiry,
+                    draws=draws,
+                    discounted_payoffs=discounted_payoffs,
+                ),
+            )
+
+            reference_values = _ensure_bs_reference()
+            if reference_values and "theta" in reference_values:
+                theta_value = float(reference_values["theta"])
+                greek_values["theta"] = theta_value
+                greeks_ci["theta"] = {"standard_error": 0.0, "half_width_abs": 0.0}
+                theta_meta = greeks_meta.setdefault(
+                    "theta",
+                    {
+                        "method": "analytic",
+                        "paths_used": simulation_paths,
+                        "vr_pipeline": vr_pipeline,
+                        "fallback": "analytic",
+                    },
+                )
+                theta_meta.update({
+                    "method": "analytic",
+                    "fallback": "analytic",
+                    "paths_used": simulation_paths,
+                    "vr_pipeline": vr_pipeline,
+                })
+
+            delta_estimate = greek_values.get("delta")
+            gamma_estimate = greek_values.get("gamma")
+            vega_estimate = greek_values.get("vega")
+            theta_estimate = greek_values.get("theta")
+            rho_estimate = greek_values.get("rho")
 
             standard_error: Optional[float] = None
             confidence_interval: Optional[Tuple[float, float]] = None
@@ -702,7 +889,9 @@ class MonteCarloModel:
                 theoretical_price=max(0.0, theoretical_price),
                 delta=delta_estimate,
                 gamma=gamma_estimate,
+                theta=theta_estimate,
                 vega=vega_estimate,
+                rho=rho_estimate,
                 computation_time_ms=elapsed_ms,
                 model_used=f"monte_carlo_{simulation_paths}",
                 implied_volatility=volatility,
@@ -711,6 +900,8 @@ class MonteCarloModel:
                 capsule_id=capsule.capsule_id if capsule else None,
                 replay_capsule=capsule,
                 control_variate_report=cv_report,
+                ci_greeks=greeks_ci,
+                greeks_meta=greeks_meta,
             )
             return result
         except Exception as exc:  # pragma: no cover
