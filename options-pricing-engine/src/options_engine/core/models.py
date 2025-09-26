@@ -92,3 +92,5 @@ class PricingResult:
     capsule_id: Optional[str] = None
     replay_capsule: Optional["ReplayCapsule"] = None
     control_variate_report: Optional[Dict[str, float | bool | None]] = None
+    ci_greeks: Optional[Dict[str, Dict[str, float]]] = None
+    greeks_meta: Optional[Dict[str, Dict[str, object]]] = None
