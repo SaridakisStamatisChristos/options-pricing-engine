@@ -1,5 +1,7 @@
 # Options Pricing Engine
 
+![CI](https://github.com/options-pricing-engine/options-pricing-engine/actions/workflows/ci.yml/badge.svg)
+
 The Options Pricing Engine (OPE) is a FastAPI service that exposes real-time options
 valuation and risk analytics powered by Black-Scholes, binomial and Monte Carlo models.
 It is designed for production use with hardened authentication, observability and
