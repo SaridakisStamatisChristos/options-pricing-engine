@@ -632,7 +632,9 @@ def test_binomial_latency_gate(
 def test_monte_carlo_latency_gate(
     golden_grid: List[BenchmarkScenario], benchmark_baseline: dict[str, dict[str, float]]
 ) -> None:
-    model = MonteCarloModel(paths=8_000, antithetic=True)
+    # Latency mode: disable CV to remove small setup/accumulation overhead.
+    # Precision is enforced separately in test_monte_carlo_precision_gate.
+    model = MonteCarloModel(paths=8_000, antithetic=True, use_control_variates=False)
     metrics = _latency_benchmark(
         "monte_carlo",
         model,
