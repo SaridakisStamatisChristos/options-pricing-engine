@@ -74,6 +74,15 @@ _DEFAULT_BUILD_ID = os.getenv("OPTIONS_ENGINE_BUILD_ID", DEFAULT_BUILD_ID)
 BUILD_ID = _DEFAULT_BUILD_ID
 
 
+def _parse_env_flag(value: Optional[str]) -> bool:
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+MC_ENABLE_QMC = _parse_env_flag(os.getenv("MC_ENABLE_QMC"))
+
+
 def _current_build_id() -> str:
     package = sys.modules.get("options_engine.api.routes")
     if package is not None:
@@ -144,8 +153,15 @@ def _greeks_filter(keys: Iterable[Tuple[str, Optional[float]]], request: QuoteRe
 def _plan_monte_carlo(request: QuoteRequest) -> MonteCarloPlan:
     params = request.model.params
     paths = params.paths if params and params.paths is not None else 20_000
-    antithetic = True if params is None or params.antithetic is None else bool(params.antithetic)
-    use_qmc = bool(params.use_qmc) if params and params.use_qmc is not None else False
+    default_use_qmc = MC_ENABLE_QMC
+    default_antithetic = False if default_use_qmc else True
+
+    antithetic = (
+        default_antithetic if params is None or params.antithetic is None else bool(params.antithetic)
+    )
+    use_qmc = (
+        default_use_qmc if params is None or params.use_qmc is None else bool(params.use_qmc)
+    )
     use_cv = True if params is None or params.use_cv is None else bool(params.use_cv)
 
     if use_qmc:

@@ -63,10 +63,22 @@ class ModelPrecision(BaseModel):
 class ModelParams(BaseModel):
     paths: Optional[int] = Field(default=None, ge=1_000, le=1_000_000)
     steps: Optional[int] = Field(default=None, ge=10, le=10_000)
-    antithetic: Optional[bool] = None
-    seed_prefix: Optional[str] = None
-    use_qmc: Optional[bool] = None
-    use_cv: Optional[bool] = None
+    antithetic: Optional[bool] = Field(
+        default=None,
+        description="Toggle antithetic variance reduction for Monte Carlo pricers.",
+    )
+    seed_prefix: Optional[str] = Field(
+        default=None,
+        description="Prefix incorporated into generated random seeds for repeatability.",
+    )
+    use_qmc: Optional[bool] = Field(
+        default=None,
+        description="Enable quasi-Monte Carlo (Sobol) sampling; disables antithetic paths when true.",
+    )
+    use_cv: Optional[bool] = Field(
+        default=None,
+        description="Enable control variates to tighten Monte Carlo confidence intervals.",
+    )
 
 
 class ModelSelector(BaseModel):
@@ -146,20 +158,32 @@ class QuoteRequest(BaseModel):
 
 
 class ConfidenceInterval(BaseModel):
-    half_width_abs: float
-    half_width_bps: float
-    paths_used: int
-    vr_pipeline: str
+    half_width_abs: float = Field(description="95% confidence half-width in absolute price units.")
+    half_width_bps: float = Field(description="95% confidence half-width expressed in basis points.")
+    paths_used: int = Field(description="Number of Monte Carlo paths consumed to reach the estimate.")
+    vr_pipeline: str = Field(description="Variance-reduction techniques applied during pricing.")
 
 
 class QuoteResponse(BaseModel):
-    theoretical_price: float
-    greeks: Optional[Dict[str, float]] = None
-    ci: Optional[ConfidenceInterval] = None
-    capsule_id: str
-    model_used: Dict[str, Any]
-    surface_id: Optional[str] = None
-    seed_lineage: Optional[str] = None
+    theoretical_price: float = Field(description="Model-implied fair value of the requested option.")
+    greeks: Optional[Dict[str, float]] = Field(
+        default=None,
+        description="First-order risk sensitivities included on demand.",
+    )
+    ci: Optional[ConfidenceInterval] = Field(
+        default=None,
+        description="Confidence interval metadata when Monte Carlo pricing provides uncertainty bounds.",
+    )
+    capsule_id: str = Field(description="Deterministic identifier representing the pricing capsule configuration.")
+    model_used: Dict[str, Any] = Field(description="Resolved model metadata, parameters, and diagnostics.")
+    surface_id: Optional[str] = Field(
+        default=None,
+        description="Identifier of the implied volatility surface leveraged during pricing, if any.",
+    )
+    seed_lineage: Optional[str] = Field(
+        default=None,
+        description="Hash of seed components to reproduce Monte Carlo random streams.",
+    )
 
 
 class BatchRequest(BaseModel):
