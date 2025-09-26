@@ -1,0 +1,25 @@
+Add a tiny self-test for the shim (e.g., assert TestClient(..., app=...) doesn’t raise when httpx≥0.28).
+
+Guard the shim to log one-time debug output when patched; makes future cleanup obvious.
+
+CI enhancements:
+
+Matrix test with Python 3.10 & 3.11 (and 3.12 when ready).
+
+Cache wheels for numpy/scipy to speed builds.
+
+Dependency hygiene:
+
+Consider pip-tools or uv lock to pin transitive deps and prevent surprise httpx/anyio bumps.
+
+Add a weekly pip-audit/dependabot schedule (you already run pip-audit in CI—nice).
+
+Docs:
+
+Note the Starlette/httpx/version constraints in SECURITY.md or README.md “Compatibility” section so teammates understand the pin rationale.
+
+Runtime safety:
+
+Emit standard rate-limit headers (Retry-After, X-RateLimit-*) alongside your 429 normalizer, if not already.
+
+Keep the python-jose import shim but prefer the real lib in prod
