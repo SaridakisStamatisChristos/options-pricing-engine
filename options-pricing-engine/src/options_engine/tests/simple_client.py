@@ -26,8 +26,14 @@ class SimpleResponse:
 
 
 class SimpleTestClient(AbstractContextManager["SimpleTestClient"]):
-    def __init__(self, app: FastAPI) -> None:
+    def __init__(
+        self,
+        app: FastAPI,
+        *,
+        default_headers: Mapping[str, str] | None = None,
+    ) -> None:
         self._app = app
+        self._default_headers = dict(default_headers or {})
 
     def __enter__(self) -> "SimpleTestClient":
         asyncio.run(self._startup())
@@ -77,7 +83,12 @@ class SimpleTestClient(AbstractContextManager["SimpleTestClient"]):
         headers: Optional[Mapping[str, str]] = None,
         body: bytes = b"",
     ) -> SimpleResponse:
-        header_items = dict(headers or {})
+        header_items = dict(self._default_headers)
+        for key, value in (headers or {}).items():
+            if value is None:
+                header_items.pop(key, None)
+            else:
+                header_items[key] = value
         header_items.setdefault("host", "testserver")
         header_items.setdefault("content-length", str(len(body)))
         scope = {

@@ -8,12 +8,22 @@ from typing import Callable, Mapping
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError
-from jose.exceptions import ExpiredSignatureError, JWTClaimsError
+
+try:
+    from jose import JWTError
+    from jose.exceptions import ExpiredSignatureError, JWTClaimsError
+except Exception:  # pragma: no cover - allow offline/dev environments without python-jose
+    class JWTError(Exception):
+        """Fallback JWT error base when python-jose is unavailable."""
+
+    class ExpiredSignatureError(JWTError):
+        """Raised when a JWT expires."""
+
+    class JWTClaimsError(JWTError):
+        """Raised when a JWT contains invalid claims."""
 
 from ..observability.metrics import AUTH_FAILURES
 from ..security import (
-    CLOCK_SKEW_SECONDS,
     DevelopmentJWTAuthenticator,
     DevelopmentSignatureError,
     OIDCAuthenticator,
@@ -71,11 +81,15 @@ def _get_authenticator() -> _AuthenticatorChain:
     dev: DevelopmentJWTAuthenticator | None = None
 
     if settings.oidc_issuer and settings.oidc_audience and settings.oidc_jwks_url:
-        cache = JWKSCache(settings.oidc_jwks_url)
+        cache = JWKSCache(
+            settings.oidc_jwks_url,
+            refresh_interval_seconds=settings.oidc_jwks_cache_ttl_seconds,
+        )
         primary = OIDCAuthenticator(
             issuer=settings.oidc_issuer,
             audience=settings.oidc_audience,
             jwks_cache=cache,
+            clock_skew_seconds=settings.oidc_clock_skew_seconds,
         )
 
     if settings.dev_jwt_secrets:
@@ -88,7 +102,7 @@ def _get_authenticator() -> _AuthenticatorChain:
             secrets=settings.dev_jwt_secrets,
             issuer=settings.oidc_issuer,
             audience=settings.oidc_audience,
-            clock_skew_seconds=CLOCK_SKEW_SECONDS,
+            clock_skew_seconds=settings.oidc_clock_skew_seconds,
         )
 
     if primary is None and dev is None:

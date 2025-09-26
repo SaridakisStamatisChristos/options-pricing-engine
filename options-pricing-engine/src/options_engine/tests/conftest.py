@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import base64
 import os
+from datetime import UTC, datetime, timedelta
 from typing import Iterator
 
 import pytest
 
 from options_engine.api.config import get_settings
-from options_engine.api.fastapi_app import create_app
+from options_engine.api.server import create_app
 from options_engine.api.security import _get_authenticator
 from options_engine.tests.simple_client import SimpleTestClient
 from options_engine.security import oidc
+from jose import jwt
 
 
 FAKE_KID = "test-key"
@@ -55,10 +57,27 @@ def _configure_security() -> Iterator[None]:
     _get_authenticator.cache_clear()
 
 
+def _make_token(*, scopes: list[str] | None = None, expires_in: int = 3600) -> str:
+    issued_at = datetime.now(UTC)
+    payload = {
+        "sub": "test-user",
+        "iat": issued_at,
+        "nbf": issued_at,
+        "exp": issued_at + timedelta(seconds=expires_in),
+        "iss": "https://issuer.test",
+        "aud": "options-pricing-engine",
+    }
+    if scopes:
+        payload["scope"] = " ".join(scopes)
+    headers = {"kid": FAKE_KID, "alg": "HS256"}
+    return jwt.encode(payload, FAKE_SECRET, algorithm="HS256", headers=headers)
+
+
 @pytest.fixture(scope="session")
 def client() -> Iterator[SimpleTestClient]:
     """Return an ASGI test client backed by a fresh FastAPI application."""
 
     app = create_app()
-    with SimpleTestClient(app) as test_client:
+    default_headers = {"Authorization": f"Bearer {_make_token(scopes=['pricing:read'])}"}
+    with SimpleTestClient(app, default_headers=default_headers) as test_client:
         yield test_client

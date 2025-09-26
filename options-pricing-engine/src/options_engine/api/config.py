@@ -10,6 +10,10 @@ from functools import lru_cache
 from typing import Tuple
 
 
+DEFAULT_OIDC_CLOCK_SKEW_SECONDS = 60
+DEFAULT_OIDC_JWKS_CACHE_TTL_SECONDS = 300
+
+
 def _get_env(name: str, *, default: str | None = None, required: bool = False) -> str | None:
     """Return a trimmed environment variable value.
 
@@ -36,6 +40,23 @@ def _get_env(name: str, *, default: str | None = None, required: bool = False) -
             raise RuntimeError(f"Environment variable {name} must not be blank")
         return default
     return trimmed
+
+
+def _get_env_alias(
+    *names: str, default: str | None = None, required: bool = False
+) -> str | None:
+    """Return the first non-empty value from the supplied environment aliases."""
+
+    for name in names:
+        value = _get_env(name)
+        if value is not None:
+            return value
+
+    if required:
+        joined = " / ".join(names)
+        raise RuntimeError(f"Environment variable {joined} is required")
+
+    return default
 
 
 def _split_csv(value: str | None) -> Tuple[str, ...]:
@@ -132,6 +153,8 @@ class Settings:
     oidc_audience: str | None
     oidc_jwks_url: str | None
     dev_jwt_secrets: Tuple[bytes, ...]
+    oidc_clock_skew_seconds: int
+    oidc_jwks_cache_ttl_seconds: int
 
     @property
     def is_production(self) -> bool:
@@ -142,17 +165,25 @@ class Settings:
 def get_settings() -> Settings:
     """Load settings from the current process environment."""
 
-    environment = (_get_env("OPE_ENVIRONMENT", default="development") or "development").lower()
+    environment_raw = (
+        _get_env_alias("ENV", "OPE_ENVIRONMENT", default="development") or "development"
+    ).lower()
+    if environment_raw in {"prod", "production"}:
+        environment = "production"
+    elif environment_raw in {"dev", "development"}:
+        environment = "development"
+    else:
+        environment = environment_raw
 
-    allowed_hosts = _split_csv(_get_env("OPE_ALLOWED_HOSTS"))
+    allowed_hosts = _split_csv(_get_env_alias("ALLOWED_HOSTS", "OPE_ALLOWED_HOSTS"))
     if not allowed_hosts:
         if environment == "production":
             raise RuntimeError(
-                "OPE_ALLOWED_HOSTS must be provided when OPE_ENVIRONMENT=production"
+                "ALLOWED_HOSTS must be provided when ENV/OPE_ENVIRONMENT=production"
             )
         allowed_hosts = ("localhost", "127.0.0.1")
 
-    allowed_origins = _split_csv(_get_env("OPE_ALLOWED_ORIGINS"))
+    allowed_origins = _split_csv(_get_env_alias("CORS_ALLOWED_ORIGINS", "OPE_ALLOWED_ORIGINS"))
     if not allowed_origins and environment != "production":
         allowed_origins = (
             "http://localhost",
@@ -187,9 +218,9 @@ def get_settings() -> Settings:
 
     dev_jwt_secrets = tuple(dev_secret_bytes)
 
-    oidc_issuer = _get_env("OIDC_ISSUER")
-    oidc_audience = _get_env("OIDC_AUDIENCE")
-    oidc_jwks_url = _get_env("OIDC_JWKS_URL")
+    oidc_issuer = _get_env_alias("OIDC_ISSUER")
+    oidc_audience = _get_env_alias("OIDC_AUDIENCE")
+    oidc_jwks_url = _get_env_alias("OIDC_JWKS_URL")
 
     if environment == "production":
         missing = [
@@ -236,6 +267,28 @@ def get_settings() -> Settings:
     rate_limit_default = _get_env("RATE_LIMIT_DEFAULT", default="60/minute") or "60/minute"
     max_body_bytes = _as_int("MAX_BODY_BYTES", default=1_048_576, minimum=1_024)
 
+    clock_skew_raw = _get_env_alias("OIDC_CLOCK_SKEW_S")
+    if clock_skew_raw is None:
+        oidc_clock_skew_seconds = DEFAULT_OIDC_CLOCK_SKEW_SECONDS
+    else:
+        try:
+            oidc_clock_skew_seconds = int(clock_skew_raw)
+        except ValueError as exc:  # pragma: no cover - defensive guard
+            raise RuntimeError("OIDC_CLOCK_SKEW_S must be an integer") from exc
+        if oidc_clock_skew_seconds < 0:
+            raise RuntimeError("OIDC_CLOCK_SKEW_S must be >= 0")
+
+    jwks_ttl_raw = _get_env_alias("OIDC_JWKS_CACHE_TTL_S")
+    if jwks_ttl_raw is None:
+        oidc_jwks_cache_ttl_seconds = DEFAULT_OIDC_JWKS_CACHE_TTL_SECONDS
+    else:
+        try:
+            oidc_jwks_cache_ttl_seconds = int(jwks_ttl_raw)
+        except ValueError as exc:  # pragma: no cover - defensive guard
+            raise RuntimeError("OIDC_JWKS_CACHE_TTL_S must be an integer") from exc
+        if oidc_jwks_cache_ttl_seconds < 60:
+            raise RuntimeError("OIDC_JWKS_CACHE_TTL_S must be >= 60 seconds")
+
     if dev_jwt_secrets and (not oidc_issuer or not oidc_audience):
         raise RuntimeError(
             "DEV_JWT_SECRET requires OIDC_ISSUER and OIDC_AUDIENCE to validate dev tokens"
@@ -259,5 +312,7 @@ def get_settings() -> Settings:
         oidc_audience=oidc_audience,
         oidc_jwks_url=oidc_jwks_url,
         dev_jwt_secrets=dev_jwt_secrets,
+        oidc_clock_skew_seconds=oidc_clock_skew_seconds,
+        oidc_jwks_cache_ttl_seconds=oidc_jwks_cache_ttl_seconds,
     )
 
