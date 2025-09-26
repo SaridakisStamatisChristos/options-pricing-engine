@@ -8,13 +8,18 @@ import pytest
 from fastapi.testclient import TestClient
 
 from options_engine.api.server import create_app
+from options_engine.tests.utils import make_token
 from options_engine.core.pricing_models import BlackScholesModel
 from options_engine.core.models import MarketData, OptionContract, OptionType
 
 
 @pytest.fixture()
 def client() -> TestClient:
-    return TestClient(create_app())
+    app = create_app()
+    token = make_token(scopes=["pricing:read"])
+    client = TestClient(app)
+    client.headers.update({"Authorization": f"Bearer {token}"})
+    return client
 
 
 def _quote_payload(model: Dict[str, object] | None = None) -> Dict[str, object]:

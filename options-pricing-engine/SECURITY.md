@@ -3,6 +3,54 @@
 This document summarises the security posture and operational controls for the
 Options Pricing Engine (OPE).
 
+## Authentication & Security quick reference
+
+- **OIDC validation:** `iss`, `aud`, `exp`, `nbf`, `iat`, and the header `kid`
+  are required. A ±60 second clock skew is tolerated during verification.
+- **Scopes:** `scope` or `scp` claims are parsed as space-delimited lists.
+  Endpoints require explicit scopes (for example, `pricing:read` and
+  `market-data:write`).
+- **JWKS cache:** Signing keys are cached for five minutes and both the
+  previous and current keys are accepted during rotations.
+- **Development fallback:** In non-production environments, tokens signed with
+  `DEV_JWT_SECRET` (plus optional `DEV_JWT_ADDITIONAL_SECRETS`) are accepted
+  when the primary OIDC provider is unavailable. These tokens must carry the
+  same claims as production tokens and are always rejected in production.
+- **Transport & headers:** Responses include HSTS, `X-Content-Type-Options:
+  nosniff`, structured JSON logs, and per-request IDs.
+- **CORS/hosts:** Default deny. Production deployments require explicit allow
+  lists for hosts and CORS origins.
+
+### Environment variables
+
+```
+ENV=production|staging|dev
+OIDC_ISSUER=https://issuer.example.com
+OIDC_AUDIENCE=options-engine
+OIDC_JWKS_URL=https://issuer.example.com/.well-known/jwks.json
+OIDC_CLOCK_SKEW_S=60
+OIDC_JWKS_CACHE_TTL_S=300
+REQUIRED_SCOPES_PRICING_READ=pricing:read
+REQUIRED_SCOPES_MARKET_WRITE=market-data:write
+DEV_JWT_SECRET= # dev only
+DEV_JWT_ADDITIONAL_SECRETS= # comma-separated, dev only
+ALLOWED_HOSTS=api.example.com,internal.example.net
+CORS_ALLOWED_ORIGINS=https://app.example.com
+```
+
+### Example call
+
+```
+curl -sS https://api.example.com/quote \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  --data '{ "contract": { ... }, "market": { ... }, "volatility": 0.2 }'
+```
+
+### Quick tests
+
+- `pytest -q options-pricing-engine/src/options_engine/tests/security/test_auth.py`
+
 ## Authentication
 
 * **OpenID Connect (OIDC) is the canonical identity mechanism.**

@@ -8,7 +8,7 @@ from typing import Iterator, cast
 import pytest
 
 from options_engine.api.config import get_settings
-from options_engine.api.fastapi_app import create_app
+from options_engine.api.server import create_app
 from options_engine.api.security import _get_authenticator
 from options_engine.tests.utils import make_token
 from options_engine.tests.simple_client import SimpleTestClient
@@ -42,7 +42,11 @@ def auth_header() -> Iterator[dict[str, str]]:
 
 
 def test_authz_denied_without_token(client) -> None:
-    response = client.post("/api/v1/pricing/single", json=PRICING_PAYLOAD)
+    response = client.post(
+        "/api/v1/pricing/single",
+        json=PRICING_PAYLOAD,
+        headers={"Authorization": None},
+    )
     assert response.status_code == 401
 
 

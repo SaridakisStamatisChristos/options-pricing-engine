@@ -6,25 +6,26 @@ from datetime import UTC, datetime, timedelta
 
 from jose import jwt
 
-from .conftest import FAKE_KID, FAKE_SECRET
+_FAKE_KID = "test-key"
+_FAKE_SECRET = "dev-secret-value-at-least-32-bytes!!!"
+_ISS = "https://issuer.test"
+_AUD = "options-pricing-engine"
 
 
-def make_token(*, subject: str = "trader", scopes: list[str] | None = None, expires_in: int = 3600) -> str:
-    """Create a signed JWT recognised by the test JWKS."""
-
-    issued_at = datetime.now(UTC)
+def make_token(*, scopes: list[str] | None = None, expires_in: int = 3600) -> str:
+    now = datetime.now(UTC)
     payload = {
-        "sub": subject,
-        "iat": issued_at,
-        "nbf": issued_at,
-        "exp": issued_at + timedelta(seconds=expires_in),
-        "iss": "https://issuer.test",
-        "aud": "options-pricing-engine",
+        "sub": "test-user",
+        "iat": now,
+        "nbf": now,
+        "exp": now + timedelta(seconds=expires_in),
+        "iss": _ISS,
+        "aud": _AUD,
     }
     if scopes:
         payload["scope"] = " ".join(scopes)
-    headers = {"kid": FAKE_KID, "alg": "HS256"}
-    return jwt.encode(payload, FAKE_SECRET, algorithm="HS256", headers=headers)
+    headers = {"kid": _FAKE_KID, "alg": "HS256"}
+    return jwt.encode(payload, _FAKE_SECRET, algorithm="HS256", headers=headers)
 
 
 __all__ = ["make_token"]
