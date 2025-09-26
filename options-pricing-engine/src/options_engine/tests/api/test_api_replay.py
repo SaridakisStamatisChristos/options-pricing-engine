@@ -3,20 +3,9 @@
 from __future__ import annotations
 
 import pytest
-from fastapi.testclient import TestClient
 
 from options_engine.api import routes
-from options_engine.api.server import create_app
-from options_engine.tests.utils import make_token
-
-
-@pytest.fixture()
-def client() -> TestClient:
-    app = create_app()
-    token = make_token(scopes=["pricing:read"])
-    client = TestClient(app)
-    client.headers.update({"Authorization": f"Bearer {token}"})
-    return client
+from options_engine.tests.simple_client import SimpleTestClient
 
 
 def _monte_carlo_payload() -> dict[str, object]:
@@ -38,7 +27,7 @@ def _monte_carlo_payload() -> dict[str, object]:
     }
 
 
-def test_replay_returns_identical_results(client: TestClient) -> None:
+def test_replay_returns_identical_results(client: SimpleTestClient) -> None:
     quote = client.post("/quote", json=_monte_carlo_payload())
     assert quote.status_code == 200
     quote_body = quote.json()
@@ -53,7 +42,9 @@ def test_replay_returns_identical_results(client: TestClient) -> None:
     assert pytest.approx(quote_body["theoretical_price"], rel=0, abs=1e-12) == replay_body["theoretical_price"]
 
 
-def test_replay_strict_build_conflict(monkeypatch: pytest.MonkeyPatch, client: TestClient) -> None:
+def test_replay_strict_build_conflict(
+    monkeypatch: pytest.MonkeyPatch, client: SimpleTestClient
+) -> None:
     quote = client.post("/quote", json=_monte_carlo_payload())
     capsule_id = quote.json()["capsule_id"]
 

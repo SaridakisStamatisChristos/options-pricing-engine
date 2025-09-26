@@ -5,21 +5,10 @@ from __future__ import annotations
 from typing import Dict
 
 import pytest
-from fastapi.testclient import TestClient
 
-from options_engine.api.server import create_app
 from options_engine.core.pricing_models import BlackScholesModel
 from options_engine.core.models import MarketData, OptionContract, OptionType
-from options_engine.tests.utils import make_token
-
-
-@pytest.fixture()
-def client() -> TestClient:
-    app = create_app()
-    token = make_token(scopes=["pricing:read"])
-    client = TestClient(app)
-    client.headers.update({"Authorization": f"Bearer {token}"})
-    return client
+from options_engine.tests.simple_client import SimpleTestClient
 
 
 def _quote_payload(model: Dict[str, object] | None = None) -> Dict[str, object]:
@@ -42,7 +31,7 @@ def _quote_payload(model: Dict[str, object] | None = None) -> Dict[str, object]:
     return payload
 
 
-def test_quote_black_scholes_returns_price_and_greeks(client: TestClient) -> None:
+def test_quote_black_scholes_returns_price_and_greeks(client: SimpleTestClient) -> None:
     response = client.post("/quote", json=_quote_payload())
     assert response.status_code == 200
     data = response.json()
@@ -65,7 +54,7 @@ def test_quote_black_scholes_returns_price_and_greeks(client: TestClient) -> Non
         assert key in greeks
 
 
-def test_quote_monte_carlo_returns_confidence_interval(client: TestClient) -> None:
+def test_quote_monte_carlo_returns_confidence_interval(client: SimpleTestClient) -> None:
     payload = _quote_payload(model={"family": "monte_carlo", "params": {"paths": 8192}})
     response = client.post("/quote", json=payload)
     assert response.status_code == 200
@@ -79,7 +68,7 @@ def test_quote_monte_carlo_returns_confidence_interval(client: TestClient) -> No
     assert ci["half_width_bps"] > 0.0
 
 
-def test_quote_monte_carlo_accepts_variance_reduction_flags(client: TestClient) -> None:
+def test_quote_monte_carlo_accepts_variance_reduction_flags(client: SimpleTestClient) -> None:
     payload = _quote_payload(
         model={
             "family": "monte_carlo",
@@ -96,7 +85,7 @@ def test_quote_monte_carlo_accepts_variance_reduction_flags(client: TestClient) 
     assert ci["vr_pipeline"] == "qmc+cv"
 
 
-def test_batch_endpoint_handles_partial_failures(client: TestClient) -> None:
+def test_batch_endpoint_handles_partial_failures(client: SimpleTestClient) -> None:
     payload = {
         "items": [
             _quote_payload(),
@@ -118,14 +107,14 @@ def test_batch_endpoint_handles_partial_failures(client: TestClient) -> None:
     assert len(data["capsule_ids"]) == 1
 
 
-def test_batch_enforces_item_limit(client: TestClient) -> None:
+def test_batch_enforces_item_limit(client: SimpleTestClient) -> None:
     payload = {"items": [_quote_payload() for _ in range(101)]}
     response = client.post("/batch", json=payload)
     assert response.status_code == 429
     assert response.headers.get("Retry-After") == "1"
 
 
-def test_greeks_endpoint_matches_analytic(client: TestClient) -> None:
+def test_greeks_endpoint_matches_analytic(client: SimpleTestClient) -> None:
     payload = _quote_payload()
     response = client.post("/greeks", json=payload)
     assert response.status_code == 200
@@ -146,7 +135,7 @@ def test_greeks_endpoint_matches_analytic(client: TestClient) -> None:
         assert pytest.approx(expected_value, rel=1e-8) == value
 
 
-def test_version_endpoint_contains_library_versions(client: TestClient) -> None:
+def test_version_endpoint_contains_library_versions(client: SimpleTestClient) -> None:
     response = client.get("/version")
     assert response.status_code == 200
     data = response.json()
@@ -154,7 +143,7 @@ def test_version_endpoint_contains_library_versions(client: TestClient) -> None:
     assert "numpy" in data["library_versions"]
 
 
-def test_idempotency_returns_identical_body(client: TestClient) -> None:
+def test_idempotency_returns_identical_body(client: SimpleTestClient) -> None:
     payload = _quote_payload()
     payload["idempotency_key"] = "test-key"
 

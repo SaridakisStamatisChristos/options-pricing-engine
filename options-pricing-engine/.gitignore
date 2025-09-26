@@ -1,0 +1,21 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.so
+
+# Distribution / packaging
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.env
+.venv
+
+# Test and coverage reports
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Project-specific generated files
+src/options_engine/tests/performance/benchmarks_report.json
