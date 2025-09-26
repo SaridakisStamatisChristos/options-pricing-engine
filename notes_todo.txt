@@ -12,7 +12,7 @@ Dependency hygiene:
 
 Consider pip-tools or uv lock to pin transitive deps and prevent surprise httpx/anyio bumps.
 
-Add a weekly pip-audit/dependabot schedule (you already run pip-audit in CI—nice).
+Add a weekly pip-audit/dependabot schedule ( already run pip-audit in CI—nice).
 
 Docs:
 
