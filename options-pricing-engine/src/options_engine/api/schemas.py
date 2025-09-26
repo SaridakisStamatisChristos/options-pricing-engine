@@ -92,6 +92,36 @@ class GreeksRequest(BaseModel):
     rho: bool = False
 
 
+class SurfaceHandle(BaseModel):
+    surface_id: Optional[str] = None
+    payload: Optional[Dict[str, Any]] = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @field_validator("surface_id", mode="before")
+    @classmethod
+    def _coerce_surface_id(cls, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        return str(value)
+
+    @field_validator("payload", mode="before")
+    @classmethod
+    def _ensure_payload(cls, value: Any) -> Optional[Dict[str, Any]]:
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise TypeError("surface payload must be a mapping")
+        return dict(value)
+
+    def resolved_id(self) -> Optional[str]:
+        if self.surface_id is not None:
+            return self.surface_id
+        if self.payload and "surface_id" in self.payload:
+            return str(self.payload["surface_id"])
+        return None
+
+
 class QuoteRequest(BaseModel):
     contract: ContractPayload
     market: MarketPayload
@@ -100,6 +130,19 @@ class QuoteRequest(BaseModel):
     greeks: Optional[GreeksRequest] = None
     precision: Optional[ModelPrecision] = None
     idempotency_key: Optional[str] = None
+    surface: Optional[SurfaceHandle] = None
+
+    @field_validator("surface", mode="before")
+    @classmethod
+    def _normalise_surface(cls, value: Any) -> Optional[SurfaceHandle]:
+        if value is None or isinstance(value, SurfaceHandle):
+            return value
+        if isinstance(value, str):
+            return SurfaceHandle(surface_id=value)
+        if isinstance(value, dict):
+            surface_id = value.get("surface_id") or value.get("id")
+            return SurfaceHandle(surface_id=surface_id, payload=value)
+        raise TypeError("surface must be a string id or mapping")
 
 
 class ConfidenceInterval(BaseModel):

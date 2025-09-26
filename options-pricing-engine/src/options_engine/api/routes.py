@@ -304,6 +304,8 @@ def _execute_quote(
         "model_used": model_used,
         "capsule_id": "",
     }
+    if request.surface is not None:
+        response_payload["surface_id"] = request.surface.resolved_id()
     if greeks:
         response_payload["greeks"] = greeks
     if ci is not None:
