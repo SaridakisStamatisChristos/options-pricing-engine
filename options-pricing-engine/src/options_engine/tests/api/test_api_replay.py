@@ -7,11 +7,16 @@ from fastapi.testclient import TestClient
 
 from options_engine.api import routes
 from options_engine.api.server import create_app
+from options_engine.tests.utils import make_token
 
 
 @pytest.fixture()
 def client() -> TestClient:
-    return TestClient(create_app())
+    app = create_app()
+    token = make_token(scopes=["pricing:read"])
+    client = TestClient(app)
+    client.headers.update({"Authorization": f"Bearer {token}"})
+    return client
 
 
 def _monte_carlo_payload() -> dict[str, object]:

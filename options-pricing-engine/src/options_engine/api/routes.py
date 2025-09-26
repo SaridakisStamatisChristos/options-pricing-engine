@@ -12,7 +12,7 @@ from importlib import util
 from pathlib import Path as SystemPath
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from fastapi import APIRouter, Body, FastAPI, HTTPException, Path as PathParam, Response
+from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Path as PathParam, Response
 from pydantic import ValidationError
 
 from ..core.models import ExerciseStyle, MarketData, OptionContract, OptionType, PricingResult
@@ -43,6 +43,7 @@ from .codec import (
     http_error,
     safe_float,
 )
+from .security import require_permission
 
 
 def _load_schemas_module():
@@ -418,12 +419,24 @@ def json_response_from_body(body: str) -> Tuple[Dict[str, Any], str]:
 def register_routes(app: FastAPI) -> None:
     router = APIRouter()
 
-    @router.post("/quote")
+    @router.get("/healthz")
+    def healthz() -> Any:
+        """Simple unauthenticated health endpoint."""
+
+        return canonical_response({"status": "ok"})
+
+    @router.post(
+        "/quote",
+        dependencies=[Depends(require_permission("pricing:read"))],
+    )
     def quote_endpoint(request: QuoteRequest) -> Any:
         _, body = _execute_quote(request, index=0, idempotency_key=request.idempotency_key)
         return Response(content=body, media_type="application/json")
 
-    @router.post("/batch")
+    @router.post(
+        "/batch",
+        dependencies=[Depends(require_permission("pricing:read"))],
+    )
     def batch_endpoint(request: BatchRequest) -> Any:
         if len(request.items) > 100:
             raise http_error(COST_GUARD_ERROR, headers={"Retry-After": "1"})
@@ -466,7 +479,10 @@ def register_routes(app: FastAPI) -> None:
         response_payload = BatchResponse(results=results, capsule_ids=capsule_ids).model_dump()
         return canonical_response(response_payload)
 
-    @router.post("/greeks")
+    @router.post(
+        "/greeks",
+        dependencies=[Depends(require_permission("pricing:read"))],
+    )
     def greeks_endpoint(request: QuoteRequest) -> Any:
         request.greeks = request.greeks or None
         payload, body = _execute_quote(request, index=0)
@@ -490,7 +506,10 @@ def register_routes(app: FastAPI) -> None:
         ).model_dump()
         return canonical_response(payload)
 
-    @router.post("/replay/{capsule_id}")
+    @router.post(
+        "/replay/{capsule_id}",
+        dependencies=[Depends(require_permission("pricing:read"))],
+    )
     def replay_endpoint(
         capsule_id: str = PathParam(...), request: ReplayRequest = Body(default=ReplayRequest())
     ) -> Any:

@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import base64
 import os
+from datetime import UTC, datetime, timedelta
 from typing import Iterator
 
 import pytest
+from jose import jwt
 
 from options_engine.api.config import get_settings
-from options_engine.api.fastapi_app import create_app
 from options_engine.api.security import _get_authenticator
-from options_engine.tests.simple_client import SimpleTestClient
+from options_engine.api.server import create_app
 from options_engine.security import oidc
-
+from options_engine.tests.simple_client import SimpleTestClient
 
 FAKE_KID = "test-key"
 FAKE_SECRET = "dev-secret-value-at-least-32-bytes!!!"
@@ -28,7 +29,6 @@ FAKE_JWKS = {
     ]
 }
 
-
 os.environ.setdefault("OIDC_ISSUER", "https://issuer.test")
 os.environ.setdefault("OIDC_AUDIENCE", "options-pricing-engine")
 os.environ.setdefault("DEV_JWT_SECRET", FAKE_SECRET)
@@ -37,6 +37,22 @@ os.environ.setdefault("OPE_ALLOWED_ORIGINS", "http://testserver")
 os.environ.setdefault("OPE_THREADS", "2")
 os.environ.setdefault("OPE_THREAD_QUEUE_MAX", "4")
 os.environ.setdefault("OPE_THREAD_QUEUE_TIMEOUT_SECONDS", "0.1")
+
+
+def _make_token(*, scopes: list[str] | None = None, expires_in: int = 3600) -> str:
+    issued_at = datetime.now(UTC)
+    payload = {
+        "sub": "test-user",
+        "iat": issued_at,
+        "nbf": issued_at,
+        "exp": issued_at + timedelta(seconds=expires_in),
+        "iss": "https://issuer.test",
+        "aud": "options-pricing-engine",
+    }
+    if scopes:
+        payload["scope"] = " ".join(scopes)
+    headers = {"kid": FAKE_KID, "alg": "HS256"}
+    return jwt.encode(payload, FAKE_SECRET, algorithm="HS256", headers=headers)
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -60,5 +76,6 @@ def client() -> Iterator[SimpleTestClient]:
     """Return an ASGI test client backed by a fresh FastAPI application."""
 
     app = create_app()
-    with SimpleTestClient(app) as test_client:
+    default_headers = {"Authorization": f"Bearer {_make_token(scopes=['pricing:read'])}"}
+    with SimpleTestClient(app, default_headers=default_headers) as test_client:
         yield test_client

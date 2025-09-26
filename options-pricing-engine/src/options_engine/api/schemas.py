@@ -165,6 +165,8 @@ class ConfidenceInterval(BaseModel):
 
 
 class QuoteResponse(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     theoretical_price: float = Field(description="Model-implied fair value of the requested option.")
     greeks: Optional[Dict[str, float]] = Field(
         default=None,
@@ -192,6 +194,8 @@ class BatchRequest(BaseModel):
 
 
 class BatchResult(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     index: int
     ok: bool
     value: Optional[QuoteResponse] = None
@@ -204,6 +208,8 @@ class BatchResponse(BaseModel):
 
 
 class GreeksOnlyResponse(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     greeks: Dict[str, float]
     capsule_id: str
     model_used: Dict[str, Any]
