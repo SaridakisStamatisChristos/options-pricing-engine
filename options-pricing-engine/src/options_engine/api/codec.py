@@ -47,7 +47,7 @@ class ErrorMapping:
 
 
 VALIDATION_ERROR = ErrorMapping(status.HTTP_400_BAD_REQUEST, "invalid_request")
-UNSUPPORTED_ERROR = ErrorMapping(status.HTTP_422_UNPROCESSABLE_ENTITY, "unsupported_configuration")
+UNSUPPORTED_ERROR = ErrorMapping(status.HTTP_422_UNPROCESSABLE_CONTENT, "unsupported_configuration")
 COST_GUARD_ERROR = ErrorMapping(status.HTTP_429_TOO_MANY_REQUESTS, "cost_guard_triggered")
 NOT_FOUND_ERROR = ErrorMapping(status.HTTP_404_NOT_FOUND, "capsule_not_found")
 CONFLICT_ERROR = ErrorMapping(status.HTTP_409_CONFLICT, "build_conflict")
