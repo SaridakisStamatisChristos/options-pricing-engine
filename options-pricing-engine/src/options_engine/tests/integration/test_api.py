@@ -6,11 +6,11 @@ import json
 from typing import Iterator, cast
 
 import pytest
-from fastapi.testclient import TestClient
 
 from options_engine.api.config import get_settings
 from options_engine.api.fastapi_app import create_app
 from options_engine.api.security import _get_authenticator
+from options_engine.tests.simple_client import SimpleTestClient
 from options_engine.tests.utils import make_token
 
 PRICING_PAYLOAD = {
@@ -36,8 +36,8 @@ PRICING_PAYLOAD = {
 
 
 @pytest.fixture()
-def client() -> Iterator[TestClient]:
-    with TestClient(create_app()) as test_client:
+def client() -> Iterator[SimpleTestClient]:
+    with SimpleTestClient(create_app()) as test_client:
         yield test_client
 
 
@@ -97,7 +97,7 @@ def test_rate_limit_trips(monkeypatch) -> None:
     _get_authenticator.cache_clear()
     app = create_app()
     token = make_token(scopes=["pricing:read"])
-    with TestClient(app) as limited_client:
+    with SimpleTestClient(app) as limited_client:
         for _ in range(2):
             ok = limited_client.post(
                 "/api/v1/pricing/single",
@@ -136,10 +136,10 @@ def test_payload_too_large_rejected(monkeypatch) -> None:
 
     payload_bytes = json.dumps(oversized_payload).encode()
 
-    with TestClient(app) as limited_client:
+    with SimpleTestClient(app) as limited_client:
         response = limited_client.post(
             "/api/v1/pricing/single",
-            data=payload_bytes,
+            content=payload_bytes,
             headers={
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",

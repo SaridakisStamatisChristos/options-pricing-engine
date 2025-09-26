@@ -1,20 +1,7 @@
-import pytest
-from fastapi.testclient import TestClient
-
-from options_engine.api.server import create_app
-from options_engine.tests.utils import make_token
+from options_engine.tests.simple_client import SimpleTestClient
 
 
-@pytest.fixture()
-def client() -> TestClient:
-    app = create_app()
-    token = make_token(scopes=["pricing:read"])
-    client = TestClient(app)
-    client.headers.update({"Authorization": f"Bearer {token}"})
-    return client
-
-
-def test_quote_american_routes_to_lsmc(client: TestClient) -> None:
+def test_quote_american_routes_to_lsmc(client: SimpleTestClient) -> None:
     payload = {
         "contract": {
             "symbol": "SPY",
