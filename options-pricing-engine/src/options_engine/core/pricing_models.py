@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -28,6 +30,15 @@ from ..greeks.estimators import (
     rho_likelihood_ratio,
 )
 from ..greeks.stability import contributions_finite, is_estimate_unstable
+from ..utils.numerics import (
+    apply_global_clamps,
+    deep_itm_policy,
+    deep_otm_upper_bound,
+    enforce_precision_policy,
+    laguerre_basis3,
+    numerics_policy_hash,
+    stable_regression,
+)
 from ..utils.validation import validate_pricing_parameters
 
 LOGGER = logging.getLogger(__name__)
@@ -45,6 +56,448 @@ LOG_MONEYNESS_CLAMP = (
     (1.0, 18.0),
     (float("inf"), 20.0),
 )
+
+
+@dataclass(slots=True)
+class PriceResult:
+    """Simplified pricing result returned by helper pricing functions."""
+
+    price: float
+    ci_half_width: float
+    meta: Dict[str, object]
+    standard_error: Optional[float] = None
+
+
+def _normalise_option_type(option_type: str) -> str:
+    value = option_type.lower()
+    if value not in {"call", "put"}:
+        raise ValueError("option_type must be 'call' or 'put'")
+    return value
+
+
+def _build_capsule_id(config: Dict[str, object]) -> str:
+    digest = hashlib.blake2b(
+        repr(sorted(config.items())).encode("utf8"), digest_size=8
+    ).hexdigest()
+    return f"american_lsmc::{digest}"
+
+
+def black_scholes_price(
+    spot: float,
+    strike: float,
+    tau: float,
+    sigma: float,
+    r: float,
+    q: float,
+    option_type: str,
+) -> PriceResult:
+    """Convenience wrapper returning a :class:`PriceResult` for Black-Scholes."""
+
+    opt = _normalise_option_type(option_type)
+    contract = OptionContract(
+        symbol="BS",
+        strike_price=strike,
+        time_to_expiry=tau,
+        option_type=OptionType.CALL if opt == "call" else OptionType.PUT,
+    )
+    market = MarketData(spot_price=spot, risk_free_rate=r, dividend_yield=q)
+    model = BlackScholesModel()
+    result = model.calculate_price(contract, market, sigma)
+    meta: Dict[str, object] = {
+        "method": "black_scholes",
+        "option_type": opt,
+        "policy_flags": [],
+    }
+    return PriceResult(price=result.theoretical_price, ci_half_width=0.0, meta=meta, standard_error=0.0)
+
+
+def binomial_price(
+    spot: float,
+    strike: float,
+    tau: float,
+    sigma: float,
+    r: float,
+    q: float,
+    option_type: str,
+    *,
+    steps: int = 200,
+) -> PriceResult:
+    """Convenience wrapper around :class:`BinomialModel`."""
+
+    opt = _normalise_option_type(option_type)
+    contract = OptionContract(
+        symbol="BINOM",
+        strike_price=strike,
+        time_to_expiry=tau,
+        option_type=OptionType.CALL if opt == "call" else OptionType.PUT,
+        exercise_style=ExerciseStyle.AMERICAN,
+    )
+    market = MarketData(spot_price=spot, risk_free_rate=r, dividend_yield=q)
+    model = BinomialModel(steps=steps)
+    result = model.calculate_price(contract, market, sigma)
+    meta: Dict[str, object] = {
+        "method": f"binomial_{steps}",
+        "option_type": opt,
+        "policy_flags": [],
+    }
+    return PriceResult(price=result.theoretical_price, ci_half_width=0.0, meta=meta, standard_error=0.0)
+
+
+def _runtime_checks(
+    *,
+    base_price: float,
+    option_type: str,
+    spot: float,
+    strike: float,
+    tau: float,
+    sigma: float,
+    r: float,
+    q: float,
+    steps: int,
+    paths: int,
+    seed: int,
+    basis: str,
+    antithetic: bool,
+    use_cv: bool,
+) -> Dict[str, object]:
+    if os.getenv("NUMERICS_STRICT") != "1":
+        return {"checks_enabled": False}
+
+    diagnostics: Dict[str, object] = {"checks_enabled": True}
+    reduced_paths = max(2_000, paths // 4)
+    bump_seed = seed + 7919
+
+    try:
+        bump = max(1e-4, 0.01 * strike)
+        low = american_lsmc_price(
+            spot,
+            max(strike - bump, 1e-8),
+            tau,
+            sigma,
+            r,
+            q,
+            option_type,
+            steps=steps,
+            paths=reduced_paths,
+            seed=bump_seed,
+            basis=basis,
+            antithetic=antithetic,
+            use_cv=False,
+            _skip_checks=True,
+        )
+        high = american_lsmc_price(
+            spot,
+            strike + bump,
+            tau,
+            sigma,
+            r,
+            q,
+            option_type,
+            steps=steps,
+            paths=reduced_paths,
+            seed=bump_seed + 1,
+            basis=basis,
+            antithetic=antithetic,
+            use_cv=False,
+            _skip_checks=True,
+        )
+        convex = low.price - 2.0 * base_price + high.price
+        diagnostics["strike_convexity"] = convex >= -1e-3 * max(1.0, abs(base_price))
+    except Exception:
+        diagnostics["strike_convexity"] = False
+
+    try:
+        bump_sigma = 0.05 * sigma if sigma > 0 else 0.01
+        higher_sigma = american_lsmc_price(
+            spot,
+            strike,
+            tau,
+            sigma + bump_sigma,
+            r,
+            q,
+            option_type,
+            steps=steps,
+            paths=reduced_paths,
+            seed=bump_seed + 2,
+            basis=basis,
+            antithetic=antithetic,
+            use_cv=False,
+            _skip_checks=True,
+        )
+        diagnostics["sigma_monotonic"] = higher_sigma.price >= base_price - 1e-3 * max(1.0, abs(base_price))
+    except Exception:
+        diagnostics["sigma_monotonic"] = False
+
+    try:
+        bump_tau = 0.05 * tau if tau > 0 else 0.01
+        higher_tau = american_lsmc_price(
+            spot,
+            strike,
+            tau + bump_tau,
+            sigma,
+            r,
+            q,
+            option_type,
+            steps=steps,
+            paths=reduced_paths,
+            seed=bump_seed + 3,
+            basis=basis,
+            antithetic=antithetic,
+            use_cv=False,
+            _skip_checks=True,
+        )
+        diagnostics["tau_monotonic"] = higher_tau.price >= base_price - 1e-3 * max(1.0, abs(base_price))
+    except Exception:
+        diagnostics["tau_monotonic"] = False
+
+    return diagnostics
+
+
+def american_lsmc_price(
+    spot: float,
+    strike: float,
+    tau: float,
+    sigma: float,
+    r: float,
+    q: float,
+    option_type: str,
+    *,
+    steps: int = 64,
+    paths: int = 20_000,
+    seed: int = 0,
+    basis: str = "laguerre3",
+    antithetic: bool = True,
+    use_cv: bool = True,
+    _skip_checks: bool = False,
+) -> PriceResult:
+    """Price an American option using the Longstaff-Schwartz method."""
+
+    if steps <= 0:
+        raise ValueError("steps must be positive")
+    if paths <= 0:
+        raise ValueError("paths must be positive")
+    if basis != "laguerre3":
+        raise ValueError("only the 'laguerre3' basis is supported")
+
+    opt = _normalise_option_type(option_type)
+    (spot, strike, tau, sigma, r, q), clamp_flags = apply_global_clamps(spot, strike, tau, sigma, r, q)
+
+    policy_flags = list(clamp_flags)
+    if antithetic:
+        policy_flags.append("antithetic")
+
+    intrinsic_now = max(spot - strike, 0.0) if opt == "call" else max(strike - spot, 0.0)
+    if tau <= 1e-6 or sigma <= 1e-8:
+        meta = {
+            "method": "american_lsmc",
+            "option_type": opt,
+            "policy_flags": policy_flags,
+            "precision_bucket": "tight",
+            "precision_limit": 0.0,
+            "runtime": {"checks_enabled": False},
+            "capsule": {
+                "capsule_id": _build_capsule_id({"seed": seed}),
+                "policy_hash": numerics_policy_hash(),
+                "config": {
+                    "spot": spot,
+                    "strike": strike,
+                    "tau": tau,
+                    "sigma": sigma,
+                    "r": r,
+                    "q": q,
+                    "steps": steps,
+                    "paths": paths,
+                    "seed": seed,
+                    "basis": basis,
+                    "antithetic": antithetic,
+                    "use_cv": use_cv,
+                },
+            },
+        }
+        return PriceResult(price=intrinsic_now, ci_half_width=0.0, meta=meta, standard_error=0.0)
+
+    step_count = max(1, int(steps))
+    dt = tau / step_count
+    discount_step = math.exp(-r * dt)
+
+    path_count = max(1, int(paths))
+    if antithetic:
+        if path_count % 2 != 0:
+            path_count += 1
+        half = path_count // 2
+    rng = np.random.default_rng(seed)
+
+    normals = rng.standard_normal((step_count, path_count if not antithetic else half))
+    if antithetic:
+        normals = np.concatenate([normals, -normals], axis=1)
+    path_count = normals.shape[1]
+
+    prices = np.empty((step_count + 1, path_count), dtype=float)
+    prices[0, :] = spot
+    drift = (r - q - 0.5 * sigma**2) * dt
+    diffusion = sigma * math.sqrt(dt)
+    for step in range(1, step_count + 1):
+        shock = diffusion * normals[step - 1]
+        prices[step] = prices[step - 1] * np.exp(drift + shock)
+
+    if opt == "call":
+        payoffs = np.maximum(prices - strike, 0.0)
+    else:
+        payoffs = np.maximum(strike - prices, 0.0)
+
+    cashflows = payoffs[-1].copy()
+    regression_guard = False
+    im_filter = False
+
+    for step in range(step_count - 1, 0, -1):
+        cashflows *= discount_step
+        intrinsic = payoffs[step]
+        in_the_money = intrinsic > 0.0
+        itm_count = int(np.count_nonzero(in_the_money))
+        if itm_count < 10:
+            im_filter = True
+            continue
+
+        scaled = prices[step, in_the_money] / strike
+        basis_matrix = laguerre_basis3(scaled)
+        targets = cashflows[in_the_money]
+
+        continuation = None
+        for columns in range(basis_matrix.shape[1], 1, -1):
+            beta, used_ridge = stable_regression(basis_matrix[:, :columns], targets)
+            predictions = basis_matrix[:, :columns] @ beta
+            if not np.all(np.isfinite(predictions)):
+                regression_guard = True
+                continue
+            continuation = predictions
+            if used_ridge and columns > 2:
+                regression_guard = True
+                continue
+            if used_ridge:
+                regression_guard = True
+            break
+
+        if continuation is None:
+            continuation = np.zeros_like(targets)
+            regression_guard = True
+
+        cont_values = np.zeros_like(cashflows)
+        cont_values[in_the_money] = continuation
+        exercise = np.zeros_like(cashflows, dtype=bool)
+        exercise[in_the_money] = intrinsic[in_the_money] >= cont_values[in_the_money]
+        cashflows = np.where(exercise, intrinsic, cashflows)
+
+    cashflows *= discount_step
+
+    intrinsic_zero = np.full(path_count, intrinsic_now, dtype=float)
+    cashflows = np.where(intrinsic_zero >= cashflows, intrinsic_zero, cashflows)
+
+    effective_cashflows = cashflows
+
+    if use_cv:
+        euro_payoff = payoffs[-1] * math.exp(-r * tau)
+        bs_reference = black_scholes_price(spot, strike, tau, sigma, r, q, opt)
+        centered_cf = effective_cashflows - np.mean(effective_cashflows)
+        centered_euro = euro_payoff - np.mean(euro_payoff)
+        denom = max(path_count - 1, 1)
+        var_euro = float(np.dot(centered_euro, centered_euro) / denom)
+        cov = float(np.dot(centered_cf, centered_euro) / denom)
+        cf_var = float(np.dot(centered_cf, centered_cf) / denom)
+        if var_euro > 0.0 and cf_var > 0.0:
+            beta = cov / var_euro
+            rho = cov / math.sqrt(max(var_euro * cf_var, 1e-24))
+        else:
+            beta = float("nan")
+            rho = 0.0
+        if np.isfinite(beta) and abs(rho) >= 0.2 and abs(beta) <= 50.0:
+            effective_cashflows = effective_cashflows - beta * (euro_payoff - bs_reference.price)
+            policy_flags.append("cv_used")
+        else:
+            policy_flags.append("cv_skipped")
+    else:
+        policy_flags.append("cv_skipped")
+
+    price = float(np.mean(effective_cashflows))
+    if path_count > 1:
+        standard_error = float(np.std(effective_cashflows, ddof=1) / math.sqrt(path_count))
+    else:
+        standard_error = 0.0
+    ci_half_width = 1.96 * standard_error
+
+    ci_half_width, precision_bucket, precision_limit, precision_flags = enforce_precision_policy(
+        price, ci_half_width
+    )
+    policy_flags.extend(precision_flags)
+
+    lower_tail, lower_flag = deep_itm_policy(spot, strike, opt)
+    upper_tail, upper_flag = deep_otm_upper_bound(spot, strike, opt)
+    if lower_flag:
+        policy_flags.append(lower_flag)
+    if upper_flag:
+        policy_flags.append(upper_flag)
+
+    lower_ci = price - ci_half_width
+    upper_ci = price + ci_half_width
+    if lower_tail is not None:
+        lower_ci = max(lower_ci, lower_tail)
+        price = max(price, lower_tail)
+    if upper_tail is not None:
+        upper_ci = min(upper_ci, upper_tail)
+        price = min(price, upper_tail)
+    ci_half_width = max(upper_ci - lower_ci, 0.0) / 2.0
+
+    if im_filter:
+        policy_flags.append("lsmc_im_filter")
+    if regression_guard:
+        policy_flags.append("reg_singular_guard")
+
+    config = {
+        "spot": spot,
+        "strike": strike,
+        "tau": tau,
+        "sigma": sigma,
+        "r": r,
+        "q": q,
+        "steps": steps,
+        "paths": paths,
+        "seed": seed,
+        "basis": basis,
+        "antithetic": antithetic,
+        "use_cv": use_cv,
+    }
+
+    runtime = _runtime_checks(
+        base_price=price,
+        option_type=opt,
+        spot=spot,
+        strike=strike,
+        tau=tau,
+        sigma=sigma,
+        r=r,
+        q=q,
+        steps=steps,
+        paths=paths,
+        seed=seed,
+        basis=basis,
+        antithetic=antithetic,
+        use_cv=use_cv,
+    ) if not _skip_checks else {"checks_enabled": False}
+
+    meta: Dict[str, object] = {
+        "method": "american_lsmc",
+        "option_type": opt,
+        "policy_flags": sorted(set(policy_flags)),
+        "precision_bucket": precision_bucket,
+        "precision_limit": precision_limit,
+        "runtime": runtime,
+        "capsule": {
+            "capsule_id": _build_capsule_id(config),
+            "policy_hash": numerics_policy_hash(),
+            "config": config,
+        },
+    }
+
+    return PriceResult(price=price, ci_half_width=ci_half_width, meta=meta, standard_error=standard_error)
 
 
 def _norm_pdf(value: float) -> float:
