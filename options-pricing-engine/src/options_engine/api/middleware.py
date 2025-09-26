@@ -76,7 +76,7 @@ class BodySizeLimitMiddleware(BaseHTTPMiddleware):
         route = request.url.path
         PAYLOAD_TOO_LARGE.labels(route=route).inc()
         response = JSONResponse(
-            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             content={"detail": "Payload too large"},
         )
         response.headers.setdefault("X-Request-ID", ensure_request_id(request))
