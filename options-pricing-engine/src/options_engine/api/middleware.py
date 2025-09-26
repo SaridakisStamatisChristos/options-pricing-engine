@@ -8,7 +8,10 @@ import time
 from typing import Awaitable, Callable
 from uuid import uuid4
 
-from starlette import status
+from starlette.status import (
+    HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+    HTTP_429_TOO_MANY_REQUESTS,
+)
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -21,11 +24,21 @@ LOGGER = logging.getLogger("options_engine.request")
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Attach basic security headers to every HTTP response."""
 
-    def __init__(self, app, *, hsts_max_age: int = 31536000, include_subdomains: bool = True) -> None:
+    def __init__(
+        self,
+        app,
+        *,
+        hsts_max_age: int = 63_072_000,
+        include_subdomains: bool = True,
+        preload: bool = True,
+    ) -> None:
         super().__init__(app)
-        self._hsts_value = "max-age={}".format(hsts_max_age)
+        parts = [f"max-age={hsts_max_age}"]
         if include_subdomains:
-            self._hsts_value += "; includeSubDomains"
+            parts.append("includeSubDomains")
+        if preload:
+            parts.append("preload")
+        self._hsts_value = "; ".join(parts)
 
     async def dispatch(
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
@@ -76,7 +89,7 @@ class BodySizeLimitMiddleware(BaseHTTPMiddleware):
         route = request.url.path
         PAYLOAD_TOO_LARGE.labels(route=route).inc()
         response = JSONResponse(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             content={"detail": "Payload too large"},
         )
         response.headers.setdefault("X-Request-ID", ensure_request_id(request))
@@ -100,7 +113,7 @@ class RateLimitResponseMiddleware(BaseHTTPMiddleware):
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
         response = await call_next(request)
-        if response.status_code != status.HTTP_429_TOO_MANY_REQUESTS:
+        if response.status_code != HTTP_429_TOO_MANY_REQUESTS:
             return response
 
         body_bytes = b""
@@ -121,7 +134,7 @@ class RateLimitResponseMiddleware(BaseHTTPMiddleware):
             detail = "Rate limit exceeded"
 
         normalized = JSONResponse(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            status_code=HTTP_429_TOO_MANY_REQUESTS,
             content={"detail": detail},
         )
 
