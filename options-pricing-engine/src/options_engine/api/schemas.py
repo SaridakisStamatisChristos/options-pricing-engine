@@ -65,6 +65,8 @@ class ModelParams(BaseModel):
     steps: Optional[int] = Field(default=None, ge=10, le=10_000)
     antithetic: Optional[bool] = None
     seed_prefix: Optional[str] = None
+    use_qmc: Optional[bool] = None
+    use_cv: Optional[bool] = None
 
 
 class ModelSelector(BaseModel):

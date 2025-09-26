@@ -558,6 +558,7 @@ class MonteCarloModel:
     paths: int = 20_000
     antithetic: bool = True
     seed_sequence: Optional[SeedSequence] = None  # Optional deterministic seed shared across threads
+    use_control_variates: bool = True
 
     def calculate_price(
         self,
@@ -616,13 +617,17 @@ class MonteCarloModel:
 
             discount_factor = math.exp(-market_data.risk_free_rate * contract.time_to_expiry)
             discounted_payoffs = discount_factor * payoff
-            adjusted_payoffs, cv_report = _apply_pathwise_control_variates(
-                discounted_payoffs,
-                terminal_prices,
-                contract=contract,
-                market_data=market_data,
-                volatility=volatility,
-            )
+            if self.use_control_variates:
+                adjusted_payoffs, cv_report = _apply_pathwise_control_variates(
+                    discounted_payoffs,
+                    terminal_prices,
+                    contract=contract,
+                    market_data=market_data,
+                    volatility=volatility,
+                )
+            else:
+                adjusted_payoffs = discounted_payoffs
+                cv_report = None
             theoretical_price = float(np.mean(adjusted_payoffs))
 
             sqrt_time = time_sqrt

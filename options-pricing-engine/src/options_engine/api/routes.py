@@ -6,6 +6,7 @@ import logging
 import os
 import time
 import sys
+from dataclasses import dataclass
 from importlib import util
 from pathlib import Path as SystemPath
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -78,6 +79,16 @@ def _current_build_id() -> str:
 OPTION_TYPE_MAP = {"CALL": OptionType.CALL, "PUT": OptionType.PUT}
 EXERCISE_STYLE_MAP = {"EUROPEAN": ExerciseStyle.EUROPEAN, "AMERICAN": ExerciseStyle.AMERICAN}
 
+
+@dataclass(frozen=True)
+class MonteCarloPlan:
+    """Description of the Monte Carlo configuration derived from a request."""
+
+    paths: int
+    antithetic: bool
+    use_qmc: bool
+    use_cv: bool
+
 BLACK_SCHOLES = BlackScholesModel()
 BINOMIAL_CACHE: Dict[int, BinomialModel] = {}
 
@@ -124,17 +135,37 @@ def _greeks_filter(keys: Iterable[Tuple[str, Optional[float]]], request: QuoteRe
     return result
 
 
-def _plan_monte_carlo(request: QuoteRequest) -> Tuple[int, bool]:
+def _plan_monte_carlo(request: QuoteRequest) -> MonteCarloPlan:
     params = request.model.params
     paths = params.paths if params and params.paths is not None else 20_000
     antithetic = True if params is None or params.antithetic is None else bool(params.antithetic)
+    use_qmc = bool(params.use_qmc) if params and params.use_qmc is not None else False
+    use_cv = True if params is None or params.use_cv is None else bool(params.use_cv)
+
+    if use_qmc:
+        antithetic = False
+
     max_paths = request.precision.max_paths if request.precision and request.precision.max_paths else MC_MAX_PATHS
     if max_paths > MC_MAX_PATHS:
         raise http_error(COST_GUARD_ERROR, headers={"Retry-After": "1"})
     paths = min(paths, max_paths)
     if paths > MC_MAX_PATHS:
         raise http_error(COST_GUARD_ERROR, headers={"Retry-After": "1"})
-    return int(paths), antithetic
+
+    return MonteCarloPlan(paths=int(paths), antithetic=antithetic, use_qmc=use_qmc, use_cv=use_cv)
+
+
+def _describe_vr_pipeline(plan: MonteCarloPlan) -> str:
+    stages: List[str] = []
+    if plan.use_qmc:
+        stages.append("qmc")
+    elif plan.antithetic:
+        stages.append("antithetic")
+    if plan.use_cv:
+        stages.append("cv")
+    if not stages:
+        return "baseline"
+    return "+".join(stages)
 
 
 def _confidence_interval(price: float, standard_error: Optional[float], paths_used: int, *, vr_pipeline: str) -> ConfidenceInterval | None:
@@ -226,10 +257,22 @@ def _execute_quote(
         result = model.calculate_price(contract, market, request.volatility)
         ci = None
     elif family == "monte_carlo":
-        paths, antithetic = _plan_monte_carlo(request)
-        model_used["params"].update({"paths": paths, "antithetic": antithetic})
+        plan = _plan_monte_carlo(request)
+        model_used["params"].update(
+            {
+                "paths": plan.paths,
+                "antithetic": plan.antithetic,
+                "use_qmc": plan.use_qmc,
+                "use_cv": plan.use_cv,
+            }
+        )
         seed_sequence = lineage_to_seed_sequence(seed_lineage)
-        model = MonteCarloModel(paths=paths, antithetic=antithetic, seed_sequence=seed_sequence)
+        model = MonteCarloModel(
+            paths=plan.paths,
+            antithetic=plan.antithetic,
+            seed_sequence=seed_sequence,
+            use_control_variates=plan.use_cv,
+        )
         result = model.calculate_price(
             contract,
             market,
@@ -239,8 +282,8 @@ def _execute_quote(
         ci = _confidence_interval(
             result.theoretical_price,
             result.standard_error,
-            paths_used=paths,
-            vr_pipeline="antithetic" if antithetic else "baseline",
+            paths_used=plan.paths,
+            vr_pipeline=_describe_vr_pipeline(plan),
         )
     else:  # pragma: no cover - defensive programming
         raise http_error(VALIDATION_ERROR)
@@ -327,8 +370,8 @@ def register_routes(app: FastAPI) -> None:
         aggregate_paths = 0
         for item in parsed_items:
             if item is not None and item.model.family == "monte_carlo":
-                paths, _ = _plan_monte_carlo(item)
-                aggregate_paths += paths
+                plan = _plan_monte_carlo(item)
+                aggregate_paths += plan.paths
         if aggregate_paths > MC_BATCH_AGGREGATE_LIMIT:
             raise http_error(COST_GUARD_ERROR, headers={"Retry-After": "1"})
 

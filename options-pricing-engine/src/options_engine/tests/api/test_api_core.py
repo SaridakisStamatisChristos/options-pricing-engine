@@ -69,9 +69,26 @@ def test_quote_monte_carlo_returns_confidence_interval(client: TestClient) -> No
     assert "ci" in data
     ci = data["ci"]
     assert ci["paths_used"] == 8192
-    assert ci["vr_pipeline"] in {"antithetic", "baseline"}
+    assert ci["vr_pipeline"] in {"antithetic+cv", "antithetic", "baseline", "cv"}
     assert ci["half_width_abs"] > 0.0
     assert ci["half_width_bps"] > 0.0
+
+
+def test_quote_monte_carlo_accepts_variance_reduction_flags(client: TestClient) -> None:
+    payload = _quote_payload(
+        model={
+            "family": "monte_carlo",
+            "params": {"paths": 4096, "use_qmc": True, "use_cv": True, "antithetic": False},
+        }
+    )
+    response = client.post("/quote", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+
+    ci = data.get("ci")
+    assert ci is not None
+    assert ci["paths_used"] == 4096
+    assert ci["vr_pipeline"] == "qmc+cv"
 
 
 def test_batch_endpoint_handles_partial_failures(client: TestClient) -> None:
