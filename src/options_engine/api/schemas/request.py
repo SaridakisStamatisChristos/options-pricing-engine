@@ -23,6 +23,7 @@ class PricingModel(StrEnum):
     BINOMIAL = "binomial_200"
     MONTE_CARLO = "monte_carlo_20k"
     LONGSTAFF_SCHWARTZ = "longstaff_schwartz_20k"
+    FINITE_DIFFERENCE = "finite_difference_400"
 
 
 class APIRequestModel(BaseModel):

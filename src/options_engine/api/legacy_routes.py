@@ -16,15 +16,12 @@ from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Response
 from fastapi import Path as PathParam
 from pydantic import ValidationError
 
+from ..core.black_scholes import BlackScholesModel
+from ..core.crr import BinomialModel
+from ..core.lsmc import american_lsmc_price
 from ..core.models import ExerciseStyle, MarketData, OptionContract, OptionType, PricingResult
-from ..core.pricing_models import (
-    MAX_LSMC_STEPS,
-    MAX_LSMC_WORK_ITEMS,
-    BinomialModel,
-    BlackScholesModel,
-    MonteCarloModel,
-    american_lsmc_price,
-)
+from ..core.monte_carlo import MonteCarloModel
+from ..core.pricing_common import MAX_LSMC_STEPS, MAX_LSMC_WORK_ITEMS
 from ..core.variance_reduction import (
     StrategyConfig,
     VarianceReductionToolkit,
@@ -211,18 +208,50 @@ def _describe_vr_pipeline(plan: MonteCarloPlan) -> str:
 
 
 def _confidence_interval(
-    price: float, standard_error: float | None, paths_used: int, *, vr_pipeline: str
+    result: PricingResult,
+    paths_used: int,
+    *,
+    vr_pipeline: str,
 ) -> ConfidenceInterval | None:
-    if standard_error is None:
+    if result.standard_error is None:
         return None
-    half_width_abs = 1.96 * standard_error
-    denominator = max(abs(price), 1e-6)
+    diagnostics = result.estimate_diagnostics or {}
+    raw_interval = diagnostics.get("raw_confidence_interval")
+    if (
+        isinstance(raw_interval, (tuple, list))
+        and len(raw_interval) == 2
+        and all(isinstance(value, (int, float)) for value in raw_interval)
+    ):
+        half_width_abs = 0.5 * abs(float(raw_interval[1]) - float(raw_interval[0]))
+    else:  # Compatibility fallback for third-party PricingResult producers.
+        half_width_abs = 1.96 * result.standard_error
+    denominator = max(abs(result.theoretical_price), 1e-6)
     half_width_bps = 10_000.0 * half_width_abs / denominator
+    interval = result.confidence_interval
+    degrees_value = diagnostics.get("degrees_of_freedom")
+    units_value = diagnostics.get("independent_units")
     return ConfidenceInterval(
         half_width_abs=safe_float(half_width_abs),
         half_width_bps=safe_float(half_width_bps),
         paths_used=int(paths_used),
         vr_pipeline=vr_pipeline,
+        lower_bound=safe_float(interval[0]) if interval is not None else None,
+        upper_bound=safe_float(interval[1]) if interval is not None else None,
+        method=(
+            str(diagnostics["interval_method"])
+            if diagnostics.get("interval_method") is not None
+            else None
+        ),
+        degrees_of_freedom=(
+            int(degrees_value)
+            if isinstance(degrees_value, (int, float)) and not isinstance(degrees_value, bool)
+            else None
+        ),
+        independent_units=(
+            int(units_value)
+            if isinstance(units_value, (int, float)) and not isinstance(units_value, bool)
+            else None
+        ),
     )
 
 
@@ -385,16 +414,47 @@ def _execute_quote(
                 use_qmc=False,
                 use_cv=american_plan.use_cv,
             )
+            lsmc_diagnostics = lsmc_result.estimate_diagnostics or {}
+            degrees_value = lsmc_diagnostics.get("degrees_of_freedom")
+            units_value = lsmc_diagnostics.get("independent_units")
             ci = ConfidenceInterval(
                 half_width_abs=half_width_abs,
                 half_width_bps=half_width_bps,
                 paths_used=effective_paths,
                 vr_pipeline=_describe_vr_pipeline(resolved_plan),
+                lower_bound=(
+                    safe_float(lsmc_result.confidence_interval[0])
+                    if lsmc_result.confidence_interval is not None
+                    else None
+                ),
+                upper_bound=(
+                    safe_float(lsmc_result.confidence_interval[1])
+                    if lsmc_result.confidence_interval is not None
+                    else None
+                ),
+                method=(
+                    str(lsmc_diagnostics["interval_method"])
+                    if lsmc_diagnostics.get("interval_method") is not None
+                    else None
+                ),
+                degrees_of_freedom=(
+                    int(degrees_value)
+                    if isinstance(degrees_value, (int, float))
+                    and not isinstance(degrees_value, bool)
+                    else None
+                ),
+                independent_units=(
+                    int(units_value)
+                    if isinstance(units_value, (int, float)) and not isinstance(units_value, bool)
+                    else None
+                ),
             )
             result = PricingResult(
                 contract_id=contract.contract_id,
                 theoretical_price=price,
                 standard_error=lsmc_result.standard_error,
+                confidence_interval=lsmc_result.confidence_interval,
+                estimate_diagnostics=lsmc_result.estimate_diagnostics,
                 model_used="american_lsmc",
             )
             model_used["params"].update(
@@ -466,8 +526,7 @@ def _execute_quote(
                     )
                     paths_used = paths + (paths % 2) if plan.antithetic else paths
                 ci = _confidence_interval(
-                    result.theoretical_price,
-                    result.standard_error,
+                    result,
                     paths_used=paths_used,
                     vr_pipeline=_describe_vr_pipeline(resolved_plan),
                 )
@@ -520,6 +579,8 @@ def _execute_quote(
         response_payload["greeks"] = greeks
     if ci is not None:
         response_payload["ci"] = ci.model_dump()
+    if result.estimate_diagnostics is not None:
+        response_payload["estimate_diagnostics"] = result.estimate_diagnostics
     response_payload["seed_lineage"] = seed_lineage
 
     capsule_record = build_capsule_record(

@@ -1,12 +1,23 @@
 [project]
 name = "options-pricing-engine"
-version = "2.0.0"
-description = "Auditable option valuation, calibration, and risk analytics"
+version = "2.1.0"
+description = "Auditable option pricing, American exercise, volatility surfaces, and risk analytics"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 authors = [{ name = "Stamatis Christos Saridakis" }]
-keywords = ["options", "pricing", "quantitative-finance", "risk", "fastapi"]
+keywords = [
+    "american-options",
+    "black-scholes",
+    "heston",
+    "monte-carlo",
+    "options",
+    "pricing",
+    "quantitative-finance",
+    "risk",
+    "ssvi",
+    "volatility-surface",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Framework :: FastAPI",

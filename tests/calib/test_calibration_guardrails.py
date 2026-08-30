@@ -446,6 +446,10 @@ def test_sabr_calibration_failure_paths(monkeypatch: pytest.MonkeyPatch) -> None
         ("max_iterations", 0, ValueError),
         ("min_strikes", True, ValueError),
         ("min_strikes", 6, ValueError),
+        ("weighting", "price", ValueError),
+        ("spread_floor", 0.0, ValueError),
+        ("holdout_fraction", 0.75, ValueError),
+        ("feller_penalty", -1.0, ValueError),
         ("tenors", (), ValueError),
         ("tenors", (True,), TypeError),
         ("tenors", (0.0,), ValueError),
@@ -463,6 +467,35 @@ def test_heston_configuration_normalises_tenors() -> None:
     config = HestonConfig(seeds=(2, 1), tenors=[2, 1], min_strikes=7)
     assert config.seeds == (2, 1)
     assert config.tenors == (1.0, 2.0)
+
+
+def test_heston_weighting_and_holdout_are_explicit() -> None:
+    group = pd.DataFrame(
+        {
+            "strike": np.linspace(70.0, 130.0, 10),
+            "mid_iv": np.linspace(0.3, 0.2, 10),
+            "bid_iv": np.linspace(0.29, 0.19, 10),
+            "ask_iv": np.linspace(0.31, 0.21, 10),
+        }
+    )
+    calibrator = HestonCalibrator(HestonConfig(weighting="auto", holdout_fraction=0.2))
+
+    weights, method = calibrator._weights(100.0, 1.0, group)
+    holdout = calibrator._holdout_mask(len(group))
+
+    assert method == "hybrid"
+    assert weights.mean() == pytest.approx(1.0)
+    assert np.isfinite(weights).all() and np.all(weights > 0.0)
+    assert np.count_nonzero(holdout) == 2
+    assert np.count_nonzero(~holdout) >= calibrator._config.min_strikes
+
+    no_spreads = group[["strike", "mid_iv"]]
+    with pytest.raises(ValueError, match="requires bid_iv"):
+        HestonCalibrator(HestonConfig(weighting="bid_ask"))._weights(
+            100.0,
+            1.0,
+            no_spreads,
+        )
 
 
 def _heston_price(**overrides: object) -> np.ndarray:

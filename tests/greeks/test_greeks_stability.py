@@ -9,9 +9,10 @@ import numpy as np
 import pytest
 from numpy.random import SeedSequence
 
-import options_engine.core.pricing_models as pricing_models
+import options_engine.core.monte_carlo as monte_carlo
+from options_engine.core.black_scholes import BlackScholesModel
 from options_engine.core.models import ExerciseStyle, MarketData, OptionContract, OptionType
-from options_engine.core.pricing_models import BlackScholesModel, MonteCarloModel
+from options_engine.core.monte_carlo import MonteCarloModel
 from tests.scenarios import BenchmarkScenario
 from tests.scenarios import golden_grid as build_golden_grid
 
@@ -109,7 +110,7 @@ def test_fd_fallback_trigger(monkeypatch: pytest.MonkeyPatch) -> None:
         assert terminal_prices is not None
         return np.full_like(terminal_prices, np.nan, dtype=float)
 
-    monkeypatch.setattr(pricing_models, "pathwise_gamma", _gamma_nan)
+    monkeypatch.setattr(monte_carlo, "pathwise_gamma", _gamma_nan)
 
     result = model.calculate_price(contract, market, volatility, seed_sequence=seed)
 

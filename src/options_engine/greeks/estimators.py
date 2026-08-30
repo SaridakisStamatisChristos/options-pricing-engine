@@ -7,17 +7,16 @@ from dataclasses import dataclass
 from numbers import Real
 
 import numpy as np
+from scipy.stats import t as student_t
 
 from options_engine.core.models import MarketData, OptionContract, OptionType
 
 from .stability import (
-    CI_Z_VALUE,
     SIGMA_FLOOR,
     clamp_log_moneyness,
     clamp_sigma,
     clamp_tau,
     guard_against_pathologies,
-    half_width,
     safe_spot,
     standard_error,
 )
@@ -46,8 +45,16 @@ def aggregate_statistics(contributions: np.ndarray) -> GreekSummary:
             value=0.0, standard_error=math.inf, half_width_abs=math.inf, contributions=sample
         )
     estimate = float(np.mean(sample))
+    if sample.size == 1:
+        return GreekSummary(
+            value=estimate,
+            standard_error=math.inf,
+            half_width_abs=math.inf,
+            contributions=sample,
+        )
     se = standard_error(sample)
-    hw = half_width(se, CI_Z_VALUE)
+    critical_value = float(student_t.ppf(0.975, df=sample.size - 1))
+    hw = critical_value * se
     return GreekSummary(value=estimate, standard_error=se, half_width_abs=hw, contributions=sample)
 
 

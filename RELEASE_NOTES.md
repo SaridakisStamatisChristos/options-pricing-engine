@@ -1,5 +1,42 @@
 # Release notes
 
+## 2.1.0 — independent solvers and honest estimator semantics
+
+This release expands the independent numerical coverage of the engine while
+making stochastic estimates and calibration diagnostics more explicit.
+
+### Numerical methods
+
+- Added a Crank–Nicolson finite-difference solver with Rannacher smoothing,
+  projected SOR for American exercise, workload bounds, Greeks, and convergence
+  diagnostics.
+- Added raw-SVI diagnostics and a globally calibrated power-law SSVI surface
+  with monotone ATM total variance, wing constraints, dense butterfly checks,
+  and common-grid calendar validation.
+- Added committed QuantLib 1.43 reference fixtures for analytic European,
+  finite-difference American, and analytic Heston prices.
+
+### Statistical semantics
+
+- Ordinary and variance-reduced Monte Carlo now use Student-t intervals over
+  independent sampling units instead of a fixed normal critical value.
+- Bounded Monte Carlo prices and confidence intervals now apply the same
+  projection, so the published price and interval describe one statistic.
+- Longstaff–Schwartz results distinguish the raw stopping-policy estimate from
+  the no-arbitrage-bounded estimate and report when either the point or interval
+  was projected.
+
+### Calibration and architecture
+
+- Heston calibration now supports uniform, vega, bid/ask, and hybrid weights;
+  deterministic strike holdouts; Feller-ratio reporting and optional
+  regularization; and cross-tenor parameter-stability diagnostics.
+- Split the former monolithic pricing module into focused Black–Scholes, CRR,
+  terminal Monte Carlo, Longstaff–Schwartz, replay, and shared-statistics
+  modules while preserving the existing import facade.
+- Replaced the abbreviated license marker with the complete Apache License 2.0
+  text and added a version-checked GitHub Release workflow.
+
 ## 2.0.0 — repository and numerical correctness repair
 
 This release intentionally breaks several unsafe 1.x behaviors.

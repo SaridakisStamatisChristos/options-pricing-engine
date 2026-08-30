@@ -30,17 +30,22 @@ from ..observability.metrics import (
     THREADPOOL_SATURATION,
     THREADPOOL_WORKERS,
 )
+from .black_scholes import BlackScholesModel
+from .crr import BinomialModel
+from .finite_difference import FiniteDifferenceModel
+from .lsmc import LongstaffSchwartzModel
 from .models import MarketData, OptionContract, PricingResult
-from .pricing_models import (
-    BinomialModel,
-    BlackScholesModel,
-    LongstaffSchwartzModel,
-    MonteCarloModel,
-)
+from .monte_carlo import MonteCarloModel
 from .volatility_surface import VolatilitySurface
 
 LOGGER = logging.getLogger(__name__)
-PricingModel = BlackScholesModel | BinomialModel | MonteCarloModel | LongstaffSchwartzModel
+PricingModel = (
+    BlackScholesModel
+    | BinomialModel
+    | MonteCarloModel
+    | LongstaffSchwartzModel
+    | FiniteDifferenceModel
+)
 
 MAX_ENGINE_THREADS = 256
 MAX_ENGINE_QUEUE_SIZE = 100_000
@@ -204,6 +209,7 @@ class OptionsEngine:
                 seed_sequence=self._base_seed_sequence,
                 reference_steps=1_000,
             ),
+            "finite_difference_400": FiniteDifferenceModel(),
         }
         self._cache = _ResultCache(max_size=cache_size, ttl_seconds=cache_ttl_seconds)
         self._executor_lock = threading.RLock()
@@ -338,6 +344,13 @@ class OptionsEngine:
             }
         if isinstance(model, BinomialModel):
             return {"steps": int(model.steps), "tree": "crr-adaptive"}
+        if isinstance(model, FiniteDifferenceModel):
+            return {
+                "space_steps": int(model.space_steps),
+                "time_steps": int(model.time_steps),
+                "scheme": "crank_nicolson_rannacher",
+                "american_solver": "psor",
+            }
         return {}
 
     def _make_cache_key(
@@ -392,6 +405,8 @@ class OptionsEngine:
             "error": result.error,
             "standard_error": result.standard_error,
             "confidence_interval": result.confidence_interval,
+            "estimate_diagnostics": result.estimate_diagnostics,
+            "numerical_diagnostics": result.numerical_diagnostics,
             "capsule_id": result.capsule_id,
         }
 

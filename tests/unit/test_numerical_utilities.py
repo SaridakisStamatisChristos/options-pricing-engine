@@ -250,6 +250,11 @@ def test_greek_estimators_and_finite_difference_harness() -> None:
     ).all()
 
     assert aggregate_statistics(np.array([])).standard_error == math.inf
+    one_unit = aggregate_statistics(np.array([1.0]))
+    assert one_unit.standard_error == math.inf
+    two_units = aggregate_statistics(np.array([1.0, 3.0]))
+    assert two_units.standard_error == pytest.approx(1.0)
+    assert two_units.half_width_abs > 12.0
     assert np.array_equal(
         simulate_terminal_prices(100.0, market, 0.2, 0.0, draws), np.full_like(draws, 100.0)
     )

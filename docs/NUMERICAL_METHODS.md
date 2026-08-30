@@ -31,6 +31,21 @@ requested step count until a valid tree is obtained or raises an explicit
 error. It never clips an invalid probability into the interval. The resolved
 step count appears in `model_used`.
 
+### Finite-difference PDE
+
+The independent PDE solver supports European and American vanilla contracts on
+a bounded uniform spot grid. It uses Crank–Nicolson time stepping, replaces the
+first step with two implicit-Euler half-steps for Rannacher smoothing, solves
+European tridiagonal systems with the Thomas algorithm, and solves the American
+linear-complementarity problem with projected SOR.
+
+The response includes the resolved spatial and time grids, truncation boundary,
+PSOR convergence and iteration counts, projection status, and finite-difference
+delta, gamma, and calendar theta. Work is rejected before allocation when grid
+limits are exceeded. This numerical family is tested against committed
+high-resolution QuantLib finite-difference references rather than against only
+another implementation inside this package.
+
 ### Terminal Monte Carlo
 
 Risk-neutral terminal lognormal draws price European vanilla payoffs. Available
@@ -44,6 +59,14 @@ variance reduction includes:
   replicates and a Student-t interval over replicate means;
 - randomized stratification using independent stratified replicates and the
   same replicate-level interval construction.
+
+Whenever variance is estimated from ordinary samples, antithetic-pair means,
+or independent randomized replicates, the engine uses a Student-t critical
+value with `independent_units - 1` degrees of freedom. A single independent
+unit has no estimable sampling variance and therefore does not receive a
+zero-width interval. Point estimates, raw intervals, bounded intervals,
+critical values, degrees of freedom, and independent-unit counts are retained
+as separate audit fields.
 
 The control deliberately does not contain an analytically priced option payoff
 component. Such a component would reconstruct the Black–Scholes answer and make
@@ -64,10 +87,13 @@ continuation cashflows on several candidate bases. Candidate diagnostics include
 AIC, BIC, and cross-validation RMSE; stopping predictions are cross-fitted so a
 path is not exercised using coefficients trained on that same sampling fold.
 
-The reported estimate is a policy lower bound, not an exact American price.
-Uncertainty is estimated over independent antithetic-pair averages and an exact
-European value is used as a cross-fitted control. Tests compare tree references
-using statistical tolerances derived from the reported standard error.
+The raw stopping-policy estimate is a statistical policy lower bound, not an
+exact American price. Uncertainty is estimated over independent
+antithetic-pair averages and an exact European value is used as a cross-fitted
+control. The response separately exposes `raw_policy_estimate`,
+`bounded_estimate`, `projection_applied`, the raw confidence interval, and the
+bounded confidence interval. Tests compare independent references using
+statistical tolerances derived from the reported standard error.
 
 For a call with no positive continuous dividend and a non-negative interest
 rate, early exercise is never optimal under the model assumptions. The
@@ -87,9 +113,10 @@ bounds:
 - call upper bound: \(S_0\exp(\max(-qT,0))\);
 - put upper bound: \(K\exp(\max(-rT,0))\).
 
-Reported confidence half-widths are measured, classified, and returned without
-artificial tightening. A projection flag identifies a constrained point
-estimate.
+The same monotone no-arbitrage projection is applied to both the point estimate
+and the endpoints of its interval, so they describe the same bounded statistic.
+The unprojected estimate, interval, and measured half-width remain available;
+separate flags identify point and interval projection.
 
 ## Volatility calibration
 
@@ -108,8 +135,32 @@ The calibrated parameters are initial variance, long-run variance, mean
 reversion, volatility of variance, and spot/variance correlation. Multi-start
 bounded least squares is deterministic for fixed seeds.
 
+Calibration can use uniform, Black-vega, inverse bid/ask-width, or hybrid
+weights. A deterministic strike holdout reports out-of-sample IV RMSE without
+making the result depend on random splitting. Each tenor reports the Feller
+ratio (2\kappa\theta/\xi^2), whether it is at least one, and the parameter
+change from the previous tenor. The Feller condition is diagnostic rather than
+a hard existence constraint; optional regularization can penalize violations.
+
 This is not a time-discretized QE simulator. The old `HestonQECalibrator` name
-is only a deprecated compatibility alias.
+is only a deprecated compatibility alias. Each maturity is still calibrated
+independently, so these diagnostics do not turn the tenor collection into one
+globally coherent Heston process.
+
+### SVI and SSVI
+
+Raw SVI support evaluates total variance, Lee wing slopes, and the
+Gatheral–Jacquier density factor for slice diagnostics. The surface builder can
+also fit one global power-law SSVI shape to all tenors. ATM total variance is
+projected onto a non-decreasing sequence with weighted pool-adjacent-violators;
+shape parameters are bounded by sufficient wing and curvature constraints.
+
+The fitted surface is accepted only after a dense density-factor check and a
+calendar check on a common log-moneyness grid, including intermediate
+maturities. Extrapolation beyond the calibrated tenor range is rejected. These
+constraints make the construction static-arbitrage-aware; they do not supply
+missing market conventions or prove dynamic consistency with a stochastic
+process.
 
 ### Selection and arbitrage validation
 
@@ -127,6 +178,11 @@ Validation checks include:
 
 Validation findings are reported rather than silently modifying the quote
 board.
+
+Committed reference fixtures under `tests/reference` were produced by
+QuantLib 1.43 using analytic European, high-resolution finite-difference
+American, and analytic Heston engines. QuantLib is deliberately not a project
+dependency; fixture regeneration is an explicit reviewed migration.
 
 ## Reproducibility
 
@@ -148,7 +204,8 @@ Before adopting a release:
    intended market domain;
 3. compare CRR convergence across step sequences rather than a single tree;
 4. measure Monte Carlo confidence coverage over many independent seeds;
-5. compare American estimates with an independent high-resolution tree or PDE;
+5. compare American estimates with the committed independent high-resolution
+   PDE fixtures and additional market-domain cases;
 6. calibrate synthetic SABR/Heston surfaces with known parameters and then use
    held-out strikes/tenors;
 7. validate day-count, dividend, settlement, and quote conventions outside this

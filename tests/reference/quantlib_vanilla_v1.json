@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "source": {
+    "library": "QuantLib",
+    "version": "1.43",
+    "valuation_date": "2026-01-01",
+    "day_count": "Actual/365 (Fixed)",
+    "european_engine": "AnalyticEuropeanEngine",
+    "american_engine": "FdBlackScholesVanillaEngine(tGrid=2000,xGrid=800,dampingSteps=2)"
+  },
+  "cases": [
+    {
+      "id": "eu_atm_call_1y",
+      "style": "european",
+      "type": "call",
+      "spot": 100.0,
+      "strike": 100.0,
+      "vol": 0.2,
+      "r": 0.05,
+      "q": 0.02,
+      "time_to_expiry": 1.0,
+      "reference_price": 9.227005508154061
+    },
+    {
+      "id": "eu_atm_put_1y",
+      "style": "european",
+      "type": "put",
+      "spot": 100.0,
+      "strike": 100.0,
+      "vol": 0.2,
+      "r": 0.05,
+      "q": 0.02,
+      "time_to_expiry": 1.0,
+      "reference_price": 6.3300806275499175
+    },
+    {
+      "id": "eu_otm_call_6m",
+      "style": "european",
+      "type": "call",
+      "spot": 95.0,
+      "strike": 110.0,
+      "vol": 0.35,
+      "r": 0.01,
+      "q": 0.015,
+      "time_to_expiry": 0.4986301369863014,
+      "reference_price": 4.1952334502555635
+    },
+    {
+      "id": "eu_itm_put_negative_rate",
+      "style": "european",
+      "type": "put",
+      "spot": 80.0,
+      "strike": 100.0,
+      "vol": 0.3,
+      "r": -0.01,
+      "q": 0.0,
+      "time_to_expiry": 2.0,
+      "reference_price": 28.692523279547988
+    },
+    {
+      "id": "eu_deep_otm_put_short",
+      "style": "european",
+      "type": "put",
+      "spot": 150.0,
+      "strike": 100.0,
+      "vol": 0.45,
+      "r": 0.03,
+      "q": 0.01,
+      "time_to_expiry": 0.0821917808219178,
+      "reference_price": 0.0034359058335914775
+    },
+    {
+      "id": "am_atm_put_1y",
+      "style": "american",
+      "type": "put",
+      "spot": 100.0,
+      "strike": 100.0,
+      "vol": 0.2,
+      "r": 0.05,
+      "q": 0.02,
+      "time_to_expiry": 1.0,
+      "reference_price": 6.660430122800409
+    },
+    {
+      "id": "am_itm_put_9m",
+      "style": "american",
+      "type": "put",
+      "spot": 80.0,
+      "strike": 100.0,
+      "vol": 0.25,
+      "r": 0.04,
+      "q": 0.0,
+      "time_to_expiry": 0.7506849315068493,
+      "reference_price": 20.305079989657326
+    },
+    {
+      "id": "am_dividend_call_18m",
+      "style": "american",
+      "type": "call",
+      "spot": 100.0,
+      "strike": 90.0,
+      "vol": 0.3,
+      "r": 0.02,
+      "q": 0.08,
+      "time_to_expiry": 1.5013698630136987,
+      "reference_price": 15.405034673992905
+    },
+    {
+      "id": "am_otm_put_2y",
+      "style": "american",
+      "type": "put",
+      "spot": 120.0,
+      "strike": 100.0,
+      "vol": 0.4,
+      "r": 0.03,
+      "q": 0.01,
+      "time_to_expiry": 2.0,
+      "reference_price": 13.91386416233297
+    }
+  ]
+}

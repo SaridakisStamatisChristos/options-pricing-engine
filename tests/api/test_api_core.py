@@ -64,6 +64,12 @@ def test_quote_monte_carlo_returns_confidence_interval(client: SimpleTestClient)
     assert ci["vr_pipeline"] in {"antithetic+cv", "antithetic", "baseline", "cv"}
     assert ci["half_width_abs"] > 0.0
     assert ci["half_width_bps"] > 0.0
+    assert ci["method"] in {"student_t", "student_t_projected"}
+    assert ci["degrees_of_freedom"] == ci["independent_units"] - 1
+    assert ci["lower_bound"] <= data["theoretical_price"] <= ci["upper_bound"]
+    diagnostics = data["estimate_diagnostics"]
+    assert diagnostics["bounded_estimate"] == data["theoretical_price"]
+    assert diagnostics["raw_confidence_interval"] is not None
 
 
 def test_quote_monte_carlo_accepts_variance_reduction_flags(client: SimpleTestClient) -> None:

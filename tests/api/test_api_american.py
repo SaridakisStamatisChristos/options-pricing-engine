@@ -20,3 +20,8 @@ def test_quote_american_routes_to_lsmc(client: SimpleTestClient) -> None:
     data = response.json()
     assert data["theoretical_price"] > 0
     assert "ci" in data and data["ci"]["half_width_abs"] >= 0
+    assert data["ci"]["method"] in {"student_t", "student_t_projected"}
+    diagnostics = data["estimate_diagnostics"]
+    assert isinstance(diagnostics["raw_policy_estimate"], (int, float))
+    assert diagnostics["bounded_estimate"] == data["theoretical_price"]
+    assert isinstance(diagnostics["projection_applied"], bool)

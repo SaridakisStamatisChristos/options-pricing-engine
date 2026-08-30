@@ -94,8 +94,12 @@ jobs:
           wheel = next(Path("dist").glob("*.whl"))
           with ZipFile(wheel) as archive:
               names = archive.namelist()
+              metadata_name = next(name for name in names if name.endswith(".dist-info/METADATA"))
+              metadata = archive.read(metadata_name).decode("utf-8")
           assert "options_engine/py.typed" in names
           assert not any(name.startswith("tests/") for name in names)
+          assert any(name.endswith(".dist-info/licenses/LICENSE") for name in names)
+          assert "License-Expression: Apache-2.0" in metadata
           PY
       - name: Audit installed dependencies
         run: |

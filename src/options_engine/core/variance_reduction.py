@@ -15,14 +15,15 @@ from scipy import stats
 from scipy.stats import norm, qmc
 
 from ..utils.validation import validate_pricing_parameters
+from .black_scholes import BlackScholesModel
 from .models import ExerciseStyle, MarketData, OptionContract, OptionType, PricingResult
-from .pricing_models import (
+from .monte_carlo import MonteCarloModel
+from .pricing_common import (
     MAX_MONTE_CARLO_PATHS,
-    BlackScholesModel,
-    MonteCarloModel,
     _antithetic_units,
     _apply_pathwise_control_variates,
 )
+from .statistical_inference import estimate_mean
 
 
 def _bounded_integer(name: str, value: object, *, minimum: int, maximum: int) -> int:
@@ -449,27 +450,19 @@ class VarianceReductionToolkit:
         else:
             adjusted_payoffs = _antithetic_units(discounted_payoffs, antithetic=strategy.antithetic)
 
-        raw_price = float(np.mean(adjusted_payoffs))
-        price = max(0.0, raw_price)
-        standard_error: float | None
-        ci_half_width: float
-        confidence_interval: tuple[float, float] | None
-
         if randomized_replicates and replicate_payoffs is not None:
-            standard_error = float(np.std(replicate_payoffs, ddof=1) / math.sqrt(replicate_count))
-            critical_value = float(stats.t.ppf(0.975, df=replicate_count - 1))
-            ci_half_width = critical_value * standard_error
-            confidence_interval = (max(0.0, price - ci_half_width), price + ci_half_width)
-        elif adjusted_payoffs.size > 1:
-            sample_std = float(np.std(adjusted_payoffs, ddof=1))
-            standard_error = sample_std / math.sqrt(adjusted_payoffs.size)
-            critical_value = float(norm.ppf(0.975))
-            ci_half_width = critical_value * standard_error
-            confidence_interval = (max(0.0, price - ci_half_width), price + ci_half_width)
+            inference_sample = replicate_payoffs
+            estimator_name = "independent_randomized_qmc_replicates"
         else:
-            standard_error = None
-            ci_half_width = float("inf")
-            confidence_interval = None
+            inference_sample = adjusted_payoffs
+            estimator_name = "terminal_payoff_sample_mean"
+
+        inference = estimate_mean(inference_sample, lower_bound=0.0)
+        price = inference.bounded_estimate
+        standard_error = inference.standard_error
+        confidence_interval = inference.confidence_interval
+        raw_half_width = inference.raw_half_width
+        ci_half_width = raw_half_width if raw_half_width is not None else float("inf")
 
         elapsed_ms = (time.perf_counter() - start) * 1000.0
 
@@ -509,6 +502,7 @@ class VarianceReductionToolkit:
             standard_error=standard_error,
             confidence_interval=confidence_interval,
             control_variate_report=cv_report,
+            estimate_diagnostics=inference.diagnostics(estimator=estimator_name),
         )
 
         return _SimulationOutcome(

@@ -1,6 +1,11 @@
 """Core utilities for the options pricing engine."""
 
-from .pricing_models import (
+from .finite_difference import (
+    FiniteDifferenceAnalysis,
+    FiniteDifferenceDiagnostics,
+    FiniteDifferenceModel,
+)
+from .lsmc import (
     BasisMetrics,
     ExercisePolicyStep,
     LongstaffSchwartzModel,
@@ -30,6 +35,9 @@ __all__ = [
     "BasisMetrics",
     "CleanBoardResult",
     "ExercisePolicyStep",
+    "FiniteDifferenceAnalysis",
+    "FiniteDifferenceDiagnostics",
+    "FiniteDifferenceModel",
     "LSMCAnalysis",
     "LongstaffSchwartzModel",
     "QCReport",

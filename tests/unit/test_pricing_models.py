@@ -2,6 +2,7 @@ import itertools
 import math
 import warnings
 
+import numpy as np
 import pytest
 from numpy.random import SeedSequence, default_rng
 
@@ -85,6 +86,96 @@ def test_monte_carlo_handles_small_antithetic_path_counts():
     assert result.confidence_interval is not None
     lower, upper = result.confidence_interval
     assert lower <= upper
+
+
+def test_monte_carlo_resolves_one_plain_path_to_two_independent_units() -> None:
+    model = MonteCarloModel(paths=1, antithetic=False, use_control_variates=False)
+    contract = OptionContract("MC-PLAIN", 100.0, 1.0, OptionType.PUT)
+    market = MarketData(spot_price=100.0, risk_free_rate=0.01)
+
+    result = model.calculate_price(contract, market, 0.2, seed_sequence=SeedSequence(9))
+
+    assert result.model_used == "monte_carlo_2"
+    assert result.standard_error is not None
+    assert result.confidence_interval is not None
+    assert result.estimate_diagnostics is not None
+    assert result.estimate_diagnostics["independent_units"] == 2
+    assert result.estimate_diagnostics["degrees_of_freedom"] == 1
+
+
+def test_monte_carlo_projects_estimate_and_interval_as_one_statistic(monkeypatch) -> None:
+    def negative_adjusted_payoffs(*args, **kwargs):
+        return np.array([-1.0, -2.0]), {
+            "cv_used": True,
+            "rho": -0.5,
+            "beta": (1.0,),
+            "raw_var": 1.0,
+            "residual_var": 0.5,
+            "independent_units": 2,
+        }
+
+    monkeypatch.setattr(
+        "options_engine.core.monte_carlo._apply_pathwise_control_variates",
+        negative_adjusted_payoffs,
+    )
+    result = MonteCarloModel(paths=4, antithetic=True).calculate_price(
+        OptionContract("BOUNDMC", 100.0, 1.0, OptionType.CALL),
+        MarketData(spot_price=100.0, risk_free_rate=0.01),
+        0.2,
+        seed_sequence=SeedSequence(19),
+    )
+
+    assert result.theoretical_price == 0.0
+    assert result.confidence_interval is not None
+    lower, upper = result.confidence_interval
+    assert lower == 0.0 <= upper
+    diagnostics = result.estimate_diagnostics
+    assert diagnostics is not None
+    assert diagnostics["raw_estimate"] == pytest.approx(-1.5)
+    assert diagnostics["bounded_estimate"] == 0.0
+    assert diagnostics["projection_applied"] is True
+    assert diagnostics["degrees_of_freedom"] == 1
+    assert float(diagnostics["critical_value"]) > 12.0
+    assert diagnostics["interval_method"] == "student_t_projected"
+
+
+def test_lsmc_exposes_raw_policy_and_bounded_estimates(monkeypatch) -> None:
+    def zero_policy_values(observations, controls, *, control_mean, folds):
+        return np.zeros_like(observations), {"used": False}
+
+    monkeypatch.setattr(
+        "options_engine.core.lsmc._cross_fitted_control_variate",
+        zero_policy_values,
+    )
+    contract = OptionContract(
+        "LSMCSEM",
+        100.0,
+        1.0,
+        OptionType.PUT,
+        ExerciseStyle.AMERICAN,
+    )
+    result = LongstaffSchwartzModel(
+        paths=100,
+        steps=5,
+        cv_folds=2,
+        reference_steps=100,
+        seed_sequence=SeedSequence(23),
+    ).calculate_price(
+        contract,
+        MarketData(spot_price=100.0, risk_free_rate=0.02),
+        0.2,
+    )
+
+    diagnostics = result.estimate_diagnostics
+    assert diagnostics is not None
+    assert diagnostics["estimator"] == "cross_fitted_lsmc_policy"
+    assert diagnostics["raw_policy_estimate"] == 0.0
+    assert diagnostics["bounded_estimate"] == result.theoretical_price
+    assert diagnostics["projection_applied"] is True
+    assert result.confidence_interval == (
+        result.theoretical_price,
+        result.theoretical_price,
+    )
 
 
 def test_model_constructors_reject_invalid_and_unsafe_workloads() -> None:

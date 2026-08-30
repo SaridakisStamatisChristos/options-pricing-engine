@@ -160,5 +160,7 @@ class PricingResult:
     capsule_id: str | None = None
     replay_capsule: ReplayCapsule | None = None
     control_variate_report: dict[str, object] | None = None
+    estimate_diagnostics: dict[str, object] | None = None
+    numerical_diagnostics: dict[str, object] | None = None
     ci_greeks: dict[str, dict[str, float]] | None = None
     greeks_meta: dict[str, dict[str, object]] | None = None

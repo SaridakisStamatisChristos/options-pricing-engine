@@ -195,6 +195,26 @@ class ConfidenceInterval(APIModel):
         description="Number of Monte Carlo paths consumed to reach the estimate."
     )
     vr_pipeline: str = Field(description="Variance-reduction techniques applied during pricing.")
+    lower_bound: float | None = Field(
+        default=None,
+        description="Lower endpoint after projection to admissible option values.",
+    )
+    upper_bound: float | None = Field(
+        default=None,
+        description="Upper endpoint after projection to admissible option values.",
+    )
+    method: str | None = Field(
+        default=None,
+        description="Sampling distribution and any bound projection used for the interval.",
+    )
+    degrees_of_freedom: int | None = Field(
+        default=None,
+        description="Degrees of freedom used by the Student-t critical value.",
+    )
+    independent_units: int | None = Field(
+        default=None,
+        description="Independent pair averages or randomized replicates used for inference.",
+    )
 
 
 class QuoteResponse(APIModel):
@@ -224,6 +244,10 @@ class QuoteResponse(APIModel):
     seed_lineage: str | None = Field(
         default=None,
         description="Hash of seed components to reproduce Monte Carlo random streams.",
+    )
+    estimate_diagnostics: dict[str, Any] | None = Field(
+        default=None,
+        description="Raw and bounded estimator semantics with uncertainty diagnostics.",
     )
 
 

@@ -23,6 +23,8 @@ class PricingResultResponse(BaseModel):
     error: str | None = None
     standard_error: float | None = None
     confidence_interval: tuple[float, float] | None = None
+    estimate_diagnostics: dict[str, object] | None = None
+    numerical_diagnostics: dict[str, object] | None = None
     quantity: float | None = None
     position_value: float | None = None
     position_delta: float | None = None

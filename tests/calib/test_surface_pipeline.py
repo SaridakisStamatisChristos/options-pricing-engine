@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime, timedelta
 
 import numpy as np
@@ -144,6 +145,29 @@ def test_heston_cross_check_selection() -> None:
     sabr_rmses = {sel.tenor: sel.rmse for sel in result.selections if sel.model == "sabr"}
     for tenor, rmse in heston_rmses.items():
         assert rmse <= sabr_rmses.get(tenor, float("inf"))
+
+
+def test_heston_reports_holdout_feller_and_cross_tenor_diagnostics() -> None:
+    clean = BoardCleaner().ingest(_heston_friendly_board())
+    calibrator = HestonCalibrator(
+        HestonConfig(seeds=(0,), max_iterations=150, holdout_fraction=0.2)
+    )
+
+    results = calibrator.calibrate(clean)
+
+    assert len(results) == 2
+    assert results[0].parameter_change_l2 is None
+    assert results[1].parameter_change_l2 is not None
+    assert results[1].parameter_change_l2 >= 0.0
+    for result in results:
+        assert math.isfinite(result.weighted_rmse)
+        assert result.holdout_rmse is not None and math.isfinite(result.holdout_rmse)
+        assert result.calibration_observations >= 7
+        assert result.holdout_observations >= 1
+        assert result.calibration_observations + result.holdout_observations == len(result.strikes)
+        assert result.feller_ratio > 0.0
+        assert result.feller_satisfied is (result.feller_ratio >= 1.0)
+        assert result.weighting == "vega"
 
 
 def test_deprecated_heston_qe_name_points_to_real_heston_calibrator() -> None:

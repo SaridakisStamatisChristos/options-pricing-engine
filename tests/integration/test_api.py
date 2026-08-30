@@ -72,6 +72,32 @@ def test_authorized_pricing_request_succeeds(client, auth_header) -> None:
     assert payload["results"]
 
 
+def test_finite_difference_american_result_exposes_solver_diagnostics(client, auth_header) -> None:
+    contract = {
+        **PRICING_PAYLOAD["contracts"][0],
+        "option_type": "put",
+        "exercise_style": "american",
+    }
+    payload = {
+        **PRICING_PAYLOAD,
+        "contracts": [contract],
+        "model": "finite_difference_400",
+        "calculate_greeks": True,
+    }
+
+    response = client.post("/api/v1/pricing/single", json=payload, headers=auth_header)
+
+    assert response.status_code == 200
+    result = response.json()["results"][0]
+    assert result["theoretical_price"] >= 0.0
+    assert result["model_used"] == "finite_difference_cn_400x400"
+    assert result["delta"] is not None
+    assert result["gamma"] is not None
+    diagnostics = result["numerical_diagnostics"]
+    assert diagnostics["exercise_solver"] == "psor"
+    assert diagnostics["psor_converged"] is True
+
+
 def test_headers_present_hsts_xcto(client) -> None:
     response = client.get("/healthz")
     assert response.status_code == 200

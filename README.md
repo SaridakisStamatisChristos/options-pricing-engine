@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/SaridakisStamatisChristos/options-pricing-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/SaridakisStamatisChristos/options-pricing-engine/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/SaridakisStamatisChristos/options-pricing-engine/actions/workflows/codeql.yml/badge.svg)](https://github.com/SaridakisStamatisChristos/options-pricing-engine/actions/workflows/codeql.yml)
+[![Python 3.11–3.13](https://img.shields.io/badge/Python-3.11–3.13-3776AB.svg)](pyproject.toml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
 An auditable Python library and FastAPI service for vanilla option valuation,
 risk sensitivities, implied-volatility calibration, and deterministic Monte
@@ -15,12 +17,12 @@ decision or production risk process.
 
 | Capability | Implementation | Important boundary |
 | --- | --- | --- |
-| European valuation | Black–Scholes with continuous dividends; adaptive CRR; terminal Monte Carlo | Black–Scholes and terminal Monte Carlo reject American contracts |
-| American valuation | Adaptive CRR and cross-fitted Longstaff–Schwartz | LSMC is a statistical lower-bound estimator and reports uncertainty |
-| Monte Carlo variance reduction | Antithetic pairs, cross-fitted discounted-underlying control variate, independently scrambled Sobol replicates | Unseeded requests deliberately bypass the result cache |
+| European valuation | Black–Scholes with continuous dividends; adaptive CRR; terminal Monte Carlo; Crank–Nicolson PDE | Black–Scholes and terminal Monte Carlo reject American contracts |
+| American valuation | Adaptive CRR; cross-fitted Longstaff–Schwartz; Crank–Nicolson/Rannacher PDE with PSOR | LSMC distinguishes its raw policy estimate from its bounded reported estimate |
+| Monte Carlo inference | Antithetic pairs, cross-fitted discounted-underlying control variate, independently scrambled Sobol replicates, Student-t intervals over independent units | Raw and no-arbitrage-projected estimates and intervals are both retained; unseeded requests bypass cache |
 | Greeks | Analytic Black–Scholes; tree/finite-difference CRR; pathwise and likelihood-ratio Monte Carlo estimators with fallbacks | Monte Carlo Greeks include estimator metadata |
-| Smile calibration | SABR and five-parameter Heston characteristic-function calibration | Model selection uses AICc, not raw in-sample RMSE |
-| Surface validation | Strike monotonicity, non-uniform-grid convexity, parity, and calendar total-variance checks | Validation reports violations; it does not silently repair quotes |
+| Smile calibration | SABR and five-parameter Heston characteristic-function calibration with liquidity-aware weights and deterministic holdouts | Model selection uses AICc; Heston reports Feller and cross-tenor stability diagnostics |
+| Volatility surfaces | Raw-SVI slice diagnostics; global power-law SSVI with monotone ATM variance; strike, parity, convexity, and calendar checks | SSVI enforces sufficient wing/curvature constraints and validates density on a dense grid |
 | Service controls | OIDC/JWKS authentication, scopes, bounded bodies, rate limits, back-pressure, metrics, replay capsules | Rate-limit/idempotency/replay state is process-local; run one worker per container |
 
 See [Numerical methods](docs/NUMERICAL_METHODS.md) for assumptions, formulas,
@@ -45,7 +47,7 @@ python -m pip install .
 
 ```python
 from options_engine.core.models import MarketData, OptionContract, OptionType
-from options_engine.core.pricing_models import BlackScholesModel
+from options_engine.core.black_scholes import BlackScholesModel
 
 contract = OptionContract(
     symbol="AAPL",
@@ -62,6 +64,11 @@ market = MarketData(
 result = BlackScholesModel().calculate_price(contract, market, volatility=0.24)
 print(result.theoretical_price, result.delta, result.vega)
 ```
+
+`FiniteDifferenceModel` in `options_engine.core.finite_difference` provides an
+independent PDE family for both European and American vanilla contracts. The
+legacy `options_engine.core.pricing_models` import path remains a compatibility
+facade.
 
 Contract identifiers hash the exact economic terms, including option and
 exercise style. Reusing the same symbol does not alias nearby strikes or
@@ -99,7 +106,9 @@ For terminal Monte Carlo, `/quote` and `/batch` may set
 `precision.target_ci_bps` and `precision.max_paths`. The engine doubles the
 path count until the reported 95% confidence-interval half-width meets the
 target or the cap is reached. Responses report the actual path count and
-`model_used.precision.target_met`; intervals are never clipped to the target.
+`model_used.precision.target_met`; measured raw intervals are never clipped to
+the target. Responses also expose the bounded interval and its projection
+diagnostics.
 Interactive OpenAPI documentation is at `/docs` outside production.
 
 ## Configuration
@@ -158,6 +167,7 @@ container scan.
 ## Project docs
 
 - [Numerical methods and validation](docs/NUMERICAL_METHODS.md)
+- [Architecture](docs/ARCHITECTURE.md)
 - [Operations runbook](OPERATIONS.md)
 - [Security policy](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
