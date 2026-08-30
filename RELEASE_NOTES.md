@@ -1,5 +1,19 @@
 # Release notes
 
+## Unreleased — PDE refinement and exercise cross-validation
+
+- Replaced the default uniform-only PDE mesh with a sinh-transformed mesh that
+  contains spot and strike exactly, while retaining explicit uniform-grid
+  compatibility.
+- Added fixed-domain multi-level refinement, conservative Richardson/error
+  semantics, boundary-tail diagnostics, and per-level convergence evidence.
+- Added an independent active-set penalty method alongside PSOR for American
+  exercise; both families now report normalized LCP residuals and are tested
+  against each other and high-resolution QuantLib 1.43 cases.
+- Expanded the external fixtures with deep ITM/OTM, seven-day, high-volatility,
+  dividend, and negative-rate American cases. No numerical result is sourced
+  from the implementation under test.
+
 ## 2.1.0 — independent solvers and honest estimator semantics
 
 This release expands the independent numerical coverage of the engine while

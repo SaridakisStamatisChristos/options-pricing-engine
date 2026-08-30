@@ -10,7 +10,7 @@ facade so the 2.0 import surface is not broken by the split.
 | Domain | `core.models` | Contracts, markets, exercise style, and auditable results |
 | Analytic and lattice | `core.black_scholes`, `core.crr` | Closed-form European pricing and adaptive binomial pricing |
 | Stochastic | `core.monte_carlo`, `core.lsmc`, `core.statistical_inference` | Terminal simulation, stopping policies, variance reduction, and uncertainty |
-| PDE | `core.finite_difference` | Crank–Nicolson/Rannacher valuation and American PSOR exercise |
+| PDE | `core.finite_difference` | Anchored non-uniform Crank–Nicolson/Rannacher valuation, refinement diagnostics, and independent American PSOR/penalty exercise |
 | Orchestration | `core.pricing_engine`, `core.replay_pricing` | Model selection, compatibility checks, caching, and deterministic replay |
 | Calibration | `calib.sabr`, `calib.heston`, `calib.svi`, `calib.select` | Smile/surface fit, model selection, and static-arbitrage diagnostics |
 | Service | `api`, `security`, `observability` | HTTP schemas, identity, admission controls, telemetry, and replay endpoints |

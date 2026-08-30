@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from options_engine.core.finite_difference import FiniteDifferenceModel
 from options_engine.core.models import MarketData, OptionContract, OptionType
 from options_engine.core.pricing_engine import OptionsEngine
 
@@ -102,3 +103,39 @@ def test_engine_rejects_invalid_request_seed_and_non_finite_aggregation() -> Non
         OptionsEngine.calculate_portfolio_greeks([{"delta": math.nan}])
     with pytest.raises(ValueError, match="quantity"):
         OptionsEngine.calculate_portfolio_greeks([{"quantity": -1}])
+
+
+def test_finite_difference_cache_identity_covers_numerical_configuration() -> None:
+    model = FiniteDifferenceModel(
+        space_steps=80,
+        time_steps=90,
+        rannacher_smoothing=False,
+        grid_type="uniform",
+        s_max_override=500.0,
+        refinement_levels=2,
+        exercise_solver="penalty",
+        penalty_parameter=1e6,
+        penalty_max_iterations=75,
+    )
+
+    config = OptionsEngine._model_config(model)
+
+    assert config == {
+        "space_steps": 80,
+        "time_steps": 90,
+        "scheme": "crank_nicolson",
+        "rannacher_smoothing": False,
+        "grid_type": "uniform",
+        "grid_concentration": 0.1,
+        "tail_standard_deviations": 3.5,
+        "s_max_override": 500.0,
+        "refinement_levels": 2,
+        "refinement_ratio": 2,
+        "american_solver": "penalty",
+        "psor_omega": 1.2,
+        "psor_tolerance": 1e-10,
+        "psor_max_iterations": 10_000,
+        "penalty_parameter": 1e6,
+        "penalty_tolerance": 1e-10,
+        "penalty_max_iterations": 75,
+    }

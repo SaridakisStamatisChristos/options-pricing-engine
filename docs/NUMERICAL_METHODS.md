@@ -34,17 +34,62 @@ step count appears in `model_used`.
 ### Finite-difference PDE
 
 The independent PDE solver supports European and American vanilla contracts on
-a bounded uniform spot grid. It uses Crank–Nicolson time stepping, replaces the
-first step with two implicit-Euler half-steps for Rannacher smoothing, solves
-European tridiagonal systems with the Thomas algorithm, and solves the American
-linear-complementarity problem with projected SOR.
+a bounded spot domain. The default mesh applies a sinh transform and contains
+both current spot and strike exactly. This concentrates resolution around the
+valuation point and payoff kink without removing the degenerate (S=0)
+boundary. A uniform spot mesh remains available through `grid_type="uniform"`
+for reproduction of earlier studies. First- and second-derivative weights use
+the full unequal-spacing formulas; index-space uniform-grid coefficients are
+never reused on a transformed mesh.
 
-The response includes the resolved spatial and time grids, truncation boundary,
-PSOR convergence and iteration counts, projection status, and finite-difference
-delta, gamma, and calendar theta. Work is rejected before allocation when grid
-limits are exceeded. This numerical family is tested against committed
-high-resolution QuantLib finite-difference references rather than against only
-another implementation inside this package.
+Time integration is Crank–Nicolson. The first time interval is replaced by two
+implicit-Euler half-steps by default (Rannacher smoothing) to damp oscillations
+from the non-smooth terminal payoff. European tridiagonal systems use the
+Thomas algorithm. American linear-complementarity problems expose two
+independent solution families:
+
+- `exercise_solver="psor"` uses projected successive over-relaxation and
+  requires both an update tolerance and a normalized complementarity residual;
+- `exercise_solver="penalty"` solves a penalized piecewise-linear equation
+  with active-set semismooth Newton steps, direct tridiagonal solves, and a
+  merit-function line search. It does not call or fall back to PSOR. The raw
+  obstacle violation before the final projection, normalized penalized-equation
+  residual, and post-projection LCP residual are reported separately so finite
+  penalty bias and floating-point cancellation remain visible. A stable active
+  set affected by cancellation is accepted only when the independently
+  evaluated projected LCP residual also satisfies the parameter-scaled limit.
+
+At (S=0) and (S=S_{max}), the solver applies the corresponding discounted
+vanilla asymptotes and their American intrinsic maxima. These formulas remain
+valid for continuous dividends and supported negative rates. One-sided delta
+residuals at both boundaries and the risk-neutral lognormal probability beyond
+(S_{max}) are reported as truncation diagnostics. `s_max_override` can hold a
+reviewed domain fixed across separate experiments; it must exceed spot and
+strike.
+
+`refinement_levels` systematically multiplies both spatial and time resolution
+while keeping the same (S_{max}). The returned value is always the direct
+finest-grid solution. For a Rannacher-smoothed European solve, the diagnostics
+may use the formal second order to report a two-grid Richardson error estimate.
+For an American/free-boundary solve, no formal order is assumed: three levels,
+same-sign changes, and a credible observed order are required before an error
+estimate is emitted. Otherwise only raw level prices and differences are
+reported. Richardson extrapolation is diagnostic and never silently replaces
+the published price.
+
+The response retains the v2.1.0 grid, PSOR, bounds, and projection keys and adds
+mesh-spacing extrema, exact-anchor flags, every refinement level and price,
+per-level iteration/LCP residuals, observed order, error estimate, extrapolated
+diagnostic value, boundary residuals, and penalty-specific convergence fields.
+Work is rejected before allocation when the finest requested grid exceeds the
+step or work limits.
+
+Regression evidence includes exact polynomial consistency of the non-uniform
+operator, European convergence against analytic Black–Scholes, independent
+PSOR/penalty agreement, and committed QuantLib 1.43 cases covering deep ITM and
+OTM contracts, seven-day maturity, high volatility, continuous dividends, and
+negative rates. See `reports/PDE_CONVERGENCE.md` for the fixed convergence
+snapshot and reproduction commands.
 
 ### Terminal Monte Carlo
 

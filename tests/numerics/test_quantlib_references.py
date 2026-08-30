@@ -22,9 +22,13 @@ def _load(name: str) -> dict[str, Any]:
     return payload
 
 
+VANILLA_REFERENCE = _load("quantlib_vanilla_v1.json")
+AMERICAN_CASES = [case for case in VANILLA_REFERENCE["cases"] if case["style"] == "american"]
+
+
 @pytest.mark.parametrize(
     "case",
-    [case for case in _load("quantlib_vanilla_v1.json")["cases"] if case["style"] == "european"],
+    [case for case in VANILLA_REFERENCE["cases"] if case["style"] == "european"],
     ids=lambda case: case["id"],
 )
 def test_black_scholes_against_committed_quantlib_reference(case: dict[str, Any]) -> None:
@@ -43,10 +47,13 @@ def test_black_scholes_against_committed_quantlib_reference(case: dict[str, Any]
 
 @pytest.mark.parametrize(
     "case",
-    [case for case in _load("quantlib_vanilla_v1.json")["cases"] if case["style"] == "american"],
+    AMERICAN_CASES,
     ids=lambda case: case["id"],
 )
-def test_finite_difference_against_committed_quantlib_reference(case: dict[str, Any]) -> None:
+@pytest.mark.parametrize("exercise_solver", ["psor", "penalty"])
+def test_finite_difference_against_committed_quantlib_reference(
+    case: dict[str, Any], exercise_solver: str
+) -> None:
     contract = OptionContract(
         case["id"],
         case["strike"],
@@ -56,9 +63,29 @@ def test_finite_difference_against_committed_quantlib_reference(case: dict[str, 
     )
     market = MarketData(case["spot"], case["r"], case["q"])
 
-    result = FiniteDifferenceModel().calculate_price(contract, market, case["vol"])
+    result = FiniteDifferenceModel(
+        space_steps=240,
+        time_steps=320,
+        exercise_solver=exercise_solver,
+    ).calculate_price(contract, market, case["vol"])
 
-    assert result.theoretical_price == pytest.approx(case["reference_price"], abs=0.005)
+    # QuantLib uses a separately implemented 2,000 x 800 finite-difference
+    # engine. The 0.002 currency-unit tolerance includes both engines' grid
+    # error and was fixed from the committed convergence study.
+    assert result.theoretical_price == pytest.approx(case["reference_price"], abs=0.002)
+
+
+def test_quantlib_american_fixture_covers_required_difficult_regimes() -> None:
+    regimes = {regime for case in AMERICAN_CASES for regime in case.get("regimes", [])}
+
+    assert regimes >= {
+        "deep_itm",
+        "deep_otm",
+        "short_maturity",
+        "high_volatility",
+        "dividends",
+        "negative_rates",
+    }
 
 
 @pytest.mark.parametrize(

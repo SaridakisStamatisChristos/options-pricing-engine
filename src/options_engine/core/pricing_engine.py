@@ -348,8 +348,23 @@ class OptionsEngine:
             return {
                 "space_steps": int(model.space_steps),
                 "time_steps": int(model.time_steps),
-                "scheme": "crank_nicolson_rannacher",
-                "american_solver": "psor",
+                "scheme": (
+                    "crank_nicolson_rannacher" if model.rannacher_smoothing else "crank_nicolson"
+                ),
+                "rannacher_smoothing": bool(model.rannacher_smoothing),
+                "grid_type": model.grid_type,
+                "grid_concentration": float(model.grid_concentration),
+                "tail_standard_deviations": float(model.tail_standard_deviations),
+                "s_max_override": model.s_max_override,
+                "refinement_levels": int(model.refinement_levels),
+                "refinement_ratio": int(model.refinement_ratio),
+                "american_solver": model.exercise_solver,
+                "psor_omega": float(model.psor_omega),
+                "psor_tolerance": float(model.psor_tolerance),
+                "psor_max_iterations": int(model.psor_max_iterations),
+                "penalty_parameter": float(model.penalty_parameter),
+                "penalty_tolerance": float(model.penalty_tolerance),
+                "penalty_max_iterations": int(model.penalty_max_iterations),
             }
         return {}
 

@@ -24,7 +24,7 @@ decision or production risk process.
 | Capability | Implementation | Important boundary |
 | --- | --- | --- |
 | European valuation | Black–Scholes with continuous dividends; adaptive CRR; terminal Monte Carlo; Crank–Nicolson PDE | Black–Scholes and terminal Monte Carlo reject American contracts |
-| American valuation | Adaptive CRR; cross-fitted Longstaff–Schwartz; Crank–Nicolson/Rannacher PDE with PSOR | LSMC distinguishes its raw policy estimate from its bounded reported estimate |
+| American valuation | Adaptive CRR; cross-fitted Longstaff–Schwartz; Crank–Nicolson/Rannacher PDE with independent PSOR and penalty solvers | LSMC distinguishes its raw policy estimate from its bounded reported estimate |
 | Monte Carlo inference | Antithetic pairs, cross-fitted discounted-underlying control variate, independently scrambled Sobol replicates, Student-t intervals over independent units | Raw and no-arbitrage-projected estimates and intervals are both retained; unseeded requests bypass cache |
 | Greeks | Analytic Black–Scholes; tree/finite-difference CRR; pathwise and likelihood-ratio Monte Carlo estimators with fallbacks | Monte Carlo Greeks include estimator metadata |
 | Smile calibration | SABR and five-parameter Heston characteristic-function calibration with liquidity-aware weights and deterministic holdouts | Model selection uses AICc; Heston reports Feller and cross-tenor stability diagnostics |
@@ -72,9 +72,13 @@ print(result.theoretical_price, result.delta, result.vega)
 ```
 
 `FiniteDifferenceModel` in `options_engine.core.finite_difference` provides an
-independent PDE family for both European and American vanilla contracts. The
-legacy `options_engine.core.pricing_models` import path remains a compatibility
-facade.
+independent PDE family for both European and American vanilla contracts. Its
+default sinh mesh contains spot and strike exactly; `grid_type="uniform"`
+retains the previous grid family. American exercise is configurable with
+`exercise_solver="psor"` or `exercise_solver="penalty"`, and
+`refinement_levels=2` or `3` adds fixed-domain convergence and justified
+Richardson diagnostics. The legacy `options_engine.core.pricing_models` import
+path remains a compatibility facade.
 
 Contract identifiers hash the exact economic terms, including option and
 exercise style. Reusing the same symbol does not alias nearby strikes or

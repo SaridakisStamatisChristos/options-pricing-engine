@@ -116,6 +116,71 @@
       "q": 0.01,
       "time_to_expiry": 2.0,
       "reference_price": 13.91386416233297
+    },
+    {
+      "id": "am_deep_itm_put_1y",
+      "regimes": ["deep_itm"],
+      "style": "american",
+      "type": "put",
+      "spot": 50.0,
+      "strike": 100.0,
+      "vol": 0.35,
+      "r": 0.03,
+      "q": 0.01,
+      "time_to_expiry": 1.0,
+      "reference_price": 50.00000000002083
+    },
+    {
+      "id": "am_deep_otm_put_1y",
+      "regimes": ["deep_otm"],
+      "style": "american",
+      "type": "put",
+      "spot": 180.0,
+      "strike": 100.0,
+      "vol": 0.25,
+      "r": 0.04,
+      "q": 0.0,
+      "time_to_expiry": 1.0,
+      "reference_price": 0.06436609535222772
+    },
+    {
+      "id": "am_short_high_vol_put_7d",
+      "regimes": ["short_maturity", "high_volatility"],
+      "style": "american",
+      "type": "put",
+      "spot": 95.0,
+      "strike": 100.0,
+      "vol": 1.2,
+      "r": 0.02,
+      "q": 0.01,
+      "time_to_expiry": 0.0191780821917808,
+      "reference_price": 9.248016507199827
+    },
+    {
+      "id": "am_high_vol_dividend_call_2y",
+      "regimes": ["high_volatility", "dividends"],
+      "style": "american",
+      "type": "call",
+      "spot": 100.0,
+      "strike": 90.0,
+      "vol": 0.8,
+      "r": 0.01,
+      "q": 0.15,
+      "time_to_expiry": 2.0,
+      "reference_price": 33.66955489831912
+    },
+    {
+      "id": "am_negative_rate_put_456d",
+      "regimes": ["negative_rates"],
+      "style": "american",
+      "type": "put",
+      "spot": 85.0,
+      "strike": 100.0,
+      "vol": 0.45,
+      "r": -0.03,
+      "q": 0.01,
+      "time_to_expiry": 1.2493150684931507,
+      "reference_price": 30.176298162797156
     }
   ]
 }
