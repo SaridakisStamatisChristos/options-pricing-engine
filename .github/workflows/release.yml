@@ -127,7 +127,7 @@ jobs:
           fi
 
           notes_file="${RUNNER_TEMP}/release-notes.md"
-          printf 'Source commit: [`%s`](%s/%s/commit/%s)\n\nThe wheel and source distribution were built once, passed the complete CI/security pipeline, and carry GitHub artifact attestations. Verify local downloads with `SHA256SUMS`.\n' \
+          printf 'Source commit: [%s](%s/%s/commit/%s)\n\nThe wheel and source distribution were built once, passed the complete CI/security pipeline, and carry GitHub artifact attestations. Verify local downloads with SHA256SUMS.\n' \
             "${SOURCE_SHA}" "${GITHUB_SERVER_URL}" "${GITHUB_REPOSITORY}" "${SOURCE_SHA}" > "${notes_file}"
           gh release create "${RELEASE_TAG}" dist/* \
             --repo "${GITHUB_REPOSITORY}" \
