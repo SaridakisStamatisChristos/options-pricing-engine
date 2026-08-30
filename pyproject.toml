@@ -1,0 +1,148 @@
+[project]
+name = "options-pricing-engine"
+version = "2.0.0"
+description = "Auditable option valuation, calibration, and risk analytics"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [{ name = "Stamatis Christos Saridakis" }]
+keywords = ["options", "pricing", "quantitative-finance", "risk", "fastapi"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: FastAPI",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business :: Financial :: Investment",
+    "Typing :: Typed",
+]
+dependencies = [
+    "fastapi>=0.141.1,<1",
+    "httpx>=0.27,<1",
+    "limits>=5,<6",
+    "numpy>=1.26,<3",
+    "pandas>=2.1,<3",
+    "prometheus-client>=0.20,<1",
+    "psutil>=6,<8",
+    "pydantic>=2.9,<3",
+    "PyJWT[crypto]>=2.13,<3",
+    "scipy>=1.11,<2",
+    "starlette>=1.3.1,<2",
+    "uvicorn[standard]>=0.30,<1",
+]
+
+[project.optional-dependencies]
+test = [
+    "httpx2>=2.12,<3",
+    "hypothesis>=6.100,<7",
+    "pytest>=9.0.3,<10",
+    "pytest-asyncio>=0.24,<2",
+    "pytest-cov>=5,<8",
+]
+quality = [
+    "bandit>=1.8,<2",
+    "build>=1.2,<2",
+    "mypy>=1.11,<3",
+    "pip-audit>=2.8,<3",
+    "ruff>=0.12,<1",
+    "twine>=5,<7",
+]
+dev = [
+    "bandit>=1.8,<2",
+    "build>=1.2,<2",
+    "httpx2>=2.12,<3",
+    "hypothesis>=6.100,<7",
+    "mypy>=1.11,<3",
+    "pip-audit>=2.8,<3",
+    "pytest>=9.0.3,<10",
+    "pytest-asyncio>=0.24,<2",
+    "pytest-cov>=5,<8",
+    "ruff>=0.12,<1",
+    "twine>=5,<7",
+]
+
+[project.urls]
+Homepage = "https://github.com/SaridakisStamatisChristos/options-pricing-engine"
+Documentation = "https://github.com/SaridakisStamatisChristos/options-pricing-engine#readme"
+Issues = "https://github.com/SaridakisStamatisChristos/options-pricing-engine/issues"
+Source = "https://github.com/SaridakisStamatisChristos/options-pricing-engine"
+
+[build-system]
+requires = ["setuptools>=77", "wheel>=0.45"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+options_engine = ["py.typed"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["dist", "build"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "PIE", "SIM", "PERF", "RUF"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["B008"]
+
+[tool.ruff.format]
+docstring-code-format = true
+quote-style = "double"
+
+[tool.mypy]
+check_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+show_error_codes = true
+strict_equality = true
+warn_redundant_casts = true
+warn_return_any = true
+# Runtime entry points deliberately validate callers that ignore annotations;
+# mypy otherwise reports those defensive branches as unreachable.
+warn_unreachable = false
+warn_unused_configs = true
+warn_unused_ignores = true
+exclude = ["^tests/"]
+
+[[tool.mypy.overrides]]
+module = [
+    "pandas.*",
+    "prometheus_client.*",
+    "psutil.*",
+    "scipy.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers"
+filterwarnings = ["error"]
+minversion = "9.0.3"
+testpaths = ["tests"]
+markers = [
+    "performance: opt-in runtime smoke tests (set RUN_PERFORMANCE_TESTS=1)",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["options_engine"]
+
+[tool.coverage.report]
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
+fail_under = 85
+show_missing = true
+skip_covered = true

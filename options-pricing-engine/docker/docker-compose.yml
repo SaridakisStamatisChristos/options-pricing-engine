@@ -1,5 +1,0 @@
-version: '3.8'
-services:
-  pricing-engine:
-    build: ../
-    ports: ['8000:8000']

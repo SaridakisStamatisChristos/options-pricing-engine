@@ -1,0 +1,86 @@
+groups:
+  - name: ope-api-slo
+    rules:
+      - record: ope_request_error_rate
+        expr: >-
+          sum(rate(ope_request_errors_total[5m]))
+          / clamp_min(sum(rate(ope_request_total[5m])), 0.000001)
+      - alert: OPEHighServerErrorRate
+        expr: ope_request_error_rate > 0.02
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High server-error rate"
+          description: >-
+            The 5xx response rate has exceeded 2% over the last 10 minutes. Investigate upstream
+            dependencies and recent deploys.
+      - alert: OPEHighLatencyP95
+        expr: |
+          max by (route) (
+            histogram_quantile(
+              0.95,
+              sum(rate(ope_request_latency_seconds_bucket[5m])) by (route, le)
+            )
+          ) > 0.75
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "P95 latency regression"
+          description: >-
+            95th percentile request latency exceeded 750ms for at least 10 minutes.
+      - alert: OPEThreadPoolRejections
+        expr: increase(ope_threadpool_rejections_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Pricing engine rejecting work"
+          description: >-
+            The pricing thread pool has rejected requests in the last five minutes. Scale out or
+            investigate long-running pricing jobs.
+      - alert: OPERateLimitSpike
+        expr: sum(rate(ope_rate_limit_rejections_total[5m])) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sustained rate-limit rejections"
+          description: >-
+            More than one request per second has been rate-limited for ten minutes. Check abusive
+            clients, replica-local quotas, and gateway policy.
+      - alert: OPEPayloadRejections
+        expr: sum(rate(ope_payload_too_large_total[5m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sustained oversized payloads"
+          description: >-
+            Oversized requests are arriving continuously. Use trusted ingress logs to identify
+            the route/client before considering a body-limit change.
+      - alert: OPEAuthenticationFailureSpike
+        expr: sum(rate(ope_auth_failures_total[5m])) > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Authentication failures increased"
+          description: >-
+            Authentication or authorization failures exceed five per second. Group by reason and
+            verify issuer availability, client configuration, and abuse controls.
+  - name: ope-engine-health
+    rules:
+      - record: ope_threadpool_queue_backlog
+        expr: clamp_min(ope_threadpool_queue_depth, 0)
+      - alert: OPEPersistentQueueBacklog
+        expr: min_over_time(ope_threadpool_queue_depth[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pricing queue backed up"
+          description: >-
+            Tasks have been queued for more than 10 minutes. Investigate slow pricing models or
+            insufficient worker capacity.

@@ -1,0 +1,228 @@
+"""Authentication and authorization helpers backed by OIDC."""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from functools import lru_cache
+from typing import Annotated
+
+from fastapi import Depends, HTTPException, Request, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jwt.exceptions import (
+    ExpiredSignatureError,
+    ImmatureSignatureError,
+    InvalidAudienceError,
+    InvalidIssuedAtError,
+    InvalidIssuerError,
+    MissingRequiredClaimError,
+    PyJWTError,
+)
+from starlette.concurrency import run_in_threadpool
+
+from ..observability.metrics import AUTH_FAILURES
+from ..security import (
+    DevelopmentJWTAuthenticator,
+    DevelopmentSignatureError,
+    JWKSCache,
+    OIDCAuthenticator,
+    OIDCClaims,
+    OIDCUnavailableError,
+)
+from .config import get_settings
+
+security = HTTPBearer(auto_error=False)
+
+
+class AuthenticationConfigurationError(RuntimeError):
+    """Raised when authentication has not been configured."""
+
+
+class _AuthenticatorChain:
+    """Resolve authentication according to the configured precedence."""
+
+    def __init__(
+        self,
+        *,
+        primary: OIDCAuthenticator | None,
+        dev: DevelopmentJWTAuthenticator | None,
+    ) -> None:
+        self._primary = primary
+        self._dev = dev
+
+    def decode(self, token: str) -> OIDCClaims:
+        # Try OIDC first if configured.
+        if self._primary is not None:
+            try:
+                return self._primary.decode(token)
+            except OIDCUnavailableError as exc:
+                # Only fall back to dev on *availability* outages.
+                if self._dev is None:
+                    raise
+                try:
+                    return self._dev.decode(token)
+                except PyJWTError as dev_exc:
+                    raise dev_exc from exc
+
+        # No primary OIDC: use dev if available.
+        if self._dev is not None:
+            return self._dev.decode(token)
+
+        # Nothing configured.
+        raise AuthenticationConfigurationError("No authenticators configured")
+
+
+@lru_cache(maxsize=1)
+def _get_authenticator() -> _AuthenticatorChain:
+    settings = get_settings()
+    primary: OIDCAuthenticator | None = None
+    dev: DevelopmentJWTAuthenticator | None = None
+
+    if settings.oidc_issuer and settings.oidc_audience and settings.oidc_jwks_url:
+        cache = JWKSCache(
+            settings.oidc_jwks_url,
+            refresh_interval_seconds=settings.oidc_jwks_cache_ttl_seconds,
+            max_stale_seconds=settings.oidc_jwks_max_stale_seconds,
+        )
+        primary = OIDCAuthenticator(
+            issuer=settings.oidc_issuer,
+            audience=settings.oidc_audience,
+            jwks_cache=cache,
+            clock_skew_seconds=settings.oidc_clock_skew_seconds,
+        )
+
+    if settings.dev_jwt_secrets:
+        # Hard guard: dev auth requires issuer/audience so claims can be validated consistently.
+        if not settings.oidc_issuer or not settings.oidc_audience:
+            raise AuthenticationConfigurationError(
+                "Development authentication requires issuer and audience configuration"
+            )
+        dev = DevelopmentJWTAuthenticator(
+            secrets=settings.dev_jwt_secrets,
+            issuer=settings.oidc_issuer,
+            audience=settings.oidc_audience,
+            clock_skew_seconds=settings.oidc_clock_skew_seconds,
+        )
+
+    if primary is None and dev is None:
+        raise AuthenticationConfigurationError(
+            "Authentication requires OIDC_ISSUER/OIDC_AUDIENCE/OIDC_JWKS_URL or DEV_JWT_SECRET"
+        )
+
+    return _AuthenticatorChain(primary=primary, dev=dev)
+
+
+@dataclass(slots=True)
+class User:
+    """Representation of the authenticated principal."""
+
+    subject: str
+    scopes: frozenset[str]
+    claims: Mapping[str, object]
+
+
+def _decode_token(raw_token: str) -> OIDCClaims:
+    try:
+        return _get_authenticator().decode(raw_token)
+    except AuthenticationConfigurationError as exc:
+        AUTH_FAILURES.labels(reason="not_configured").inc()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication not configured",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    except KeyError as exc:  # pragma: no cover - defensive guard
+        AUTH_FAILURES.labels(reason="unknown_kid").inc()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    except OIDCUnavailableError as exc:
+        AUTH_FAILURES.labels(reason="jwks_unavailable").inc()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication temporarily unavailable",
+            headers={"Retry-After": "60"},
+        ) from exc
+    except ExpiredSignatureError as exc:
+        AUTH_FAILURES.labels(reason="expired").inc()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token expired",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    except (
+        ImmatureSignatureError,
+        InvalidAudienceError,
+        InvalidIssuedAtError,
+        InvalidIssuerError,
+        MissingRequiredClaimError,
+    ) as exc:
+        AUTH_FAILURES.labels(reason=_claims_failure_reason(exc)).inc()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    except DevelopmentSignatureError as exc:
+        AUTH_FAILURES.labels(reason="dev_bad_sig").inc()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    except PyJWTError as exc:
+        AUTH_FAILURES.labels(reason="jwt_error").inc()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+
+def _claims_failure_reason(exc: PyJWTError) -> str:
+    if isinstance(exc, InvalidAudienceError) or (
+        isinstance(exc, MissingRequiredClaimError) and exc.claim == "aud"
+    ):
+        return "aud"
+    if isinstance(exc, InvalidIssuerError) or (
+        isinstance(exc, MissingRequiredClaimError) and exc.claim == "iss"
+    ):
+        return "iss"
+    return "claims"
+
+
+async def get_current_user(
+    request: Request,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)],
+) -> User:
+    if credentials is None:
+        AUTH_FAILURES.labels(reason="missing_token").inc()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Credentials required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # JWKS refresh is network-bound and the JWT backend is synchronous. Keep it
+    # off the event loop so a provider outage cannot stall unrelated requests.
+    claims = await run_in_threadpool(_decode_token, credentials.credentials)
+    request.state.user_sub = claims.subject
+    return User(subject=claims.subject, scopes=claims.scopes, claims=dict(claims.claims))
+
+
+def require_permission(permission: str) -> Callable[[User], User]:
+    def dependency(user: Annotated[User, Depends(get_current_user)]) -> User:
+        if permission not in user.scopes:
+            AUTH_FAILURES.labels(reason="insufficient_scope").inc()
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Permission '{permission}' required",
+            )
+        return user
+
+    return dependency
+
+
+__all__ = ["User", "get_current_user", "require_permission"]

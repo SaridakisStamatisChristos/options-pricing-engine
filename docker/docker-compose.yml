@@ -1,0 +1,20 @@
+services:
+  pricing-engine:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    init: true
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      OPE_ENVIRONMENT: development
+      OPE_ALLOWED_HOSTS: localhost,127.0.0.1
+      OPE_THREADS: "4"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
