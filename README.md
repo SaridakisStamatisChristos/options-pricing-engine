@@ -5,9 +5,15 @@
 [![Python 3.11–3.13](https://img.shields.io/badge/Python-3.11–3.13-3776AB.svg)](pyproject.toml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
-An auditable Python library and FastAPI service for vanilla option valuation,
-risk sensitivities, implied-volatility calibration, and deterministic Monte
-Carlo replay.
+An auditable Python quantitative-finance library and authenticated FastAPI
+service for European and American vanilla options. It covers Black–Scholes,
+adaptive CRR, terminal Monte Carlo and randomized Sobol QMC, cross-fitted
+Longstaff–Schwartz, Crank–Nicolson/Rannacher finite differences, SABR, Heston,
+raw SVI, and globally parameterized SSVI.
+
+The same package provides Greeks, uncertainty estimates, static-arbitrage
+checks, deterministic replay, and bounded service controls. The methods table
+below states the numerical role and practical boundary of each component.
 
 The project is beta software. Validate models and market conventions against
 your own independent implementation before using results in a financial
@@ -161,8 +167,20 @@ uv build
 ```
 
 The performance test is an opt-in smoke budget, not a portable benchmark. CI
-also runs dependency auditing, CodeQL, distribution inspection, and a Trivy
-container scan.
+also runs minimum-dependency tests, dependency auditing, CodeQL, distribution
+inspection, and a Trivy container scan. GitHub Releases are downstream of all
+of those gates for the same source commit: CI builds each wheel and source
+distribution once, retains `SHA256SUMS`, and publishes GitHub artifact
+attestations before creating an exact-commit tag and release.
+
+After downloading a release's three assets, verify both integrity and
+GitHub-hosted provenance:
+
+```bash
+sha256sum --check SHA256SUMS
+gh attestation verify options_pricing_engine-*.whl --repo SaridakisStamatisChristos/options-pricing-engine
+gh attestation verify options_pricing_engine-*.tar.gz --repo SaridakisStamatisChristos/options-pricing-engine
+```
 
 ## Project docs
 

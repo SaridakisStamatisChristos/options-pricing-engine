@@ -1544,6 +1544,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
+    { name = "pyyaml" },
     { name = "ruff" },
     { name = "twine" },
 ]
@@ -1561,6 +1562,7 @@ test = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
+    { name = "pyyaml" },
 ]
 
 [package.metadata]
@@ -1592,6 +1594,8 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.24,<2" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5,<8" },
     { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=5,<8" },
+    { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0.2,<7" },
+    { name = "pyyaml", marker = "extra == 'test'", specifier = ">=6.0.2,<7" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.12,<1" },
     { name = "ruff", marker = "extra == 'quality'", specifier = ">=0.12,<1" },
     { name = "scipy", specifier = ">=1.11,<2" },

@@ -12,7 +12,8 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Main runs are serialized so a newer push cannot interrupt an in-flight release.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   tests:
@@ -24,11 +25,13 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: ${{ matrix.python-version }}
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           enable-cache: true
       - name: Install test environment
@@ -41,11 +44,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.11"
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           enable-cache: true
       - name: Install minimum supported dependencies
@@ -60,19 +65,34 @@ jobs:
           --path .venv-min/lib/python3.11/site-packages
 
   quality:
-    name: Quality and package
+    name: Quality, security, coverage, and package
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.11"
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           enable-cache: true
       - name: Install quality environment
         run: uv sync --locked --extra test --extra quality --python 3.11
+      - name: Validate GitHub Actions workflows
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        shell: bash
+        run: |
+          archive="${RUNNER_TEMP}/actionlint.tar.gz"
+          curl --fail --silent --show-error --location \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            --output "${archive}"
+          echo "${ACTIONLINT_SHA256}  ${archive}" | sha256sum --check
+          tar --extract --gzip --no-same-owner --file "${archive}" --directory "${RUNNER_TEMP}" actionlint
+          "${RUNNER_TEMP}/actionlint" -color
       - name: Lint and format
         run: |
           uv run --no-sync ruff format --check .
@@ -85,40 +105,59 @@ jobs:
         run: uv run --no-sync python -m pytest -m "not performance" --cov=options_engine --cov-report=term --cov-report=xml
       - name: Build and validate distributions
         run: |
+          rm -rf dist
           uv build
           uv run --no-sync twine check dist/*
           uv run --no-sync python - <<'PY'
           from pathlib import Path
+          from tarfile import open as open_tar
           from zipfile import ZipFile
 
-          wheel = next(Path("dist").glob("*.whl"))
+          wheels = list(Path("dist").glob("*.whl"))
+          sdists = list(Path("dist").glob("*.tar.gz"))
+          assert len(wheels) == 1
+          assert len(sdists) == 1
+          wheel = wheels[0]
+          sdist = sdists[0]
           with ZipFile(wheel) as archive:
               names = archive.namelist()
               metadata_name = next(name for name in names if name.endswith(".dist-info/METADATA"))
               metadata = archive.read(metadata_name).decode("utf-8")
+          with open_tar(sdist, "r:gz") as archive:
+              source_names = archive.getnames()
           assert "options_engine/py.typed" in names
           assert not any(name.startswith("tests/") for name in names)
           assert any(name.endswith(".dist-info/licenses/LICENSE") for name in names)
           assert "License-Expression: Apache-2.0" in metadata
+          assert any(name.endswith("/LICENSE") for name in source_names)
+          assert any(name.endswith("/pyproject.toml") for name in source_names)
           PY
+          (cd dist && sha256sum ./*.whl ./*.tar.gz > SHA256SUMS)
+          (cd dist && sha256sum --check SHA256SUMS)
       - name: Audit installed dependencies
         run: |
           uv export --quiet --locked --no-dev --no-emit-project --format requirements.txt --output-file /tmp/options-engine-runtime.txt
           uv run --no-sync pip-audit --strict --require-hashes --requirement /tmp/options-engine-runtime.txt
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: distributions
-          path: dist/*
+          name: distributions-${{ github.sha }}
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+            dist/SHA256SUMS
           if-no-files-found: error
+          retention-days: 7
 
   container:
-    name: Container
+    name: Container build and Trivy
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/build-push-action@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           file: docker/Dockerfile
@@ -126,10 +165,30 @@ jobs:
           tags: options-pricing-engine:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - uses: aquasecurity/trivy-action@v0.36.0
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: options-pricing-engine:ci
           format: table
           exit-code: "1"
           ignore-unfixed: true
           severity: CRITICAL,HIGH
+
+  codeql:
+    name: CodeQL security analysis
+    uses: ./.github/workflows/codeql.yml
+    permissions:
+      contents: read
+      security-events: write
+
+  release:
+    name: Release after all required gates
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [tests, minimum-versions, quality, container, codeql]
+    uses: ./.github/workflows/release.yml
+    with:
+      source_sha: ${{ github.sha }}
+      artifact_name: distributions-${{ github.sha }}
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write

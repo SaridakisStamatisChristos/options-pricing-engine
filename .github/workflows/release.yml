@@ -1,84 +1,138 @@
-name: Release
+name: Publish Release
 
 on:
-  push:
-    branches:
-      - main
-    tags:
-      - "v*"
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Exact commit that passed every required gate
+        required: true
+        type: string
+      artifact_name:
+        description: Tested distribution artifact from the caller run
+        required: true
+        type: string
 
-permissions:
-  contents: write
+# The caller grants write/OIDC access only to this reusable publication job.
+permissions: {}
 
 concurrency:
-  group: release-${{ github.sha }}
+  group: release-${{ inputs.source_sha }}
   cancel-in-progress: false
 
 jobs:
-  github-release:
-    name: Validate and publish GitHub Release
+  publish:
+    name: Publish attested GitHub Release
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out the gated source commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          fetch-depth: 0
-      - uses: actions/setup-python@v7
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.11"
-      - uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-      - name: Resolve release tag
+      - name: Resolve release identity
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
         shell: bash
         run: |
-          package_version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
-          release_tag="v${package_version}"
-          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" != "${release_tag}" ]]; then
-            echo "Tag ${GITHUB_REF_NAME} does not match package version ${package_version}" >&2
+          if [[ ! "${SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "source_sha must be a full commit SHA" >&2
             exit 1
           fi
+          if [[ "${SOURCE_SHA}" != "${GITHUB_SHA}" ]]; then
+            echo "Reusable workflow SHA ${GITHUB_SHA} does not match requested source ${SOURCE_SHA}" >&2
+            exit 1
+          fi
+          checked_out_sha="$(git rev-parse HEAD)"
+          if [[ "${checked_out_sha}" != "${SOURCE_SHA}" ]]; then
+            echo "Checked-out SHA ${checked_out_sha} does not match requested source ${SOURCE_SHA}" >&2
+            exit 1
+          fi
+
+          package_version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          release_tag="v${package_version}"
           echo "tag=${release_tag}" >> "${GITHUB_OUTPUT}"
-          if gh release view "${release_tag}" >/dev/null 2>&1; then
+          if gh release view "${release_tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             echo "publish=false" >> "${GITHUB_OUTPUT}"
-            echo "Release ${release_tag} already exists; nothing to publish."
+            echo "Release ${release_tag} already exists; no tag or release will be changed."
           else
             echo "publish=true" >> "${GITHUB_OUTPUT}"
           fi
-      - name: Install release environment
+      - name: Download tested distributions
         if: steps.release.outputs.publish == 'true'
-        run: uv sync --locked --extra test --extra quality --python 3.11
-      - name: Verify source and tests
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: dist
+      - name: Verify release artifacts
         if: steps.release.outputs.publish == 'true'
+        shell: bash
         run: |
-          uv run --no-sync ruff format --check .
-          uv run --no-sync ruff check .
-          uv run --no-sync mypy src
-          uv run --no-sync python -m pytest -m "not performance"
-      - name: Build and inspect distributions
+          test "$(find dist -maxdepth 1 -type f -name '*.whl' | wc -l)" -eq 1
+          test "$(find dist -maxdepth 1 -type f -name '*.tar.gz' | wc -l)" -eq 1
+          test -f dist/SHA256SUMS
+          (cd dist && sha256sum --check SHA256SUMS)
+      - name: Attest wheel and source distribution
         if: steps.release.outputs.publish == 'true'
-        run: |
-          uv build
-          uv run --no-sync twine check dist/*
-          sha256sum dist/* > dist/SHA256SUMS
-      - name: Publish GitHub Release
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: |
+            dist/*.whl
+            dist/*.tar.gz
+          show-summary: true
+      - name: Publish exact-commit tag and release
         if: steps.release.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
         shell: bash
         run: |
-          if ! git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git tag -a "${RELEASE_TAG}" "${GITHUB_SHA}" -m "Options Pricing Engine ${RELEASE_TAG}"
-            git push origin "${RELEASE_TAG}"
+          tag_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" 2>/dev/null || true)"
+          if [[ -n "${tag_ref}" ]]; then
+            object_type="$(jq -r '.object.type' <<<"${tag_ref}")"
+            object_sha="$(jq -r '.object.sha' <<<"${tag_ref}")"
+            if [[ "${object_type}" == "tag" ]]; then
+              tag_commit="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${object_sha}" --jq '.object.sha')"
+            elif [[ "${object_type}" == "commit" ]]; then
+              tag_commit="${object_sha}"
+            else
+              echo "Unsupported existing tag object type: ${object_type}" >&2
+              exit 1
+            fi
+            if [[ "${tag_commit}" != "${SOURCE_SHA}" ]]; then
+              echo "Existing ${RELEASE_TAG} targets ${tag_commit}, not gated commit ${SOURCE_SHA}" >&2
+              exit 1
+            fi
+          else
+            tag_object_sha="$(gh api --method POST "repos/${GITHUB_REPOSITORY}/git/tags" \
+              -f tag="${RELEASE_TAG}" \
+              -f message="Options Pricing Engine ${RELEASE_TAG}" \
+              -f object="${SOURCE_SHA}" \
+              -f type=commit \
+              --jq '.sha')"
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/${RELEASE_TAG}" \
+              -f sha="${tag_object_sha}" >/dev/null
           fi
+
+          notes_file="${RUNNER_TEMP}/release-notes.md"
+          printf 'Source commit: [`%s`](%s/%s/commit/%s)\n\nThe wheel and source distribution were built once, passed the complete CI/security pipeline, and carry GitHub artifact attestations. Verify local downloads with `SHA256SUMS`.\n' \
+            "${SOURCE_SHA}" "${GITHUB_SERVER_URL}" "${GITHUB_REPOSITORY}" "${SOURCE_SHA}" > "${notes_file}"
           gh release create "${RELEASE_TAG}" dist/* \
+            --repo "${GITHUB_REPOSITORY}" \
             --verify-tag \
+            --target "${SOURCE_SHA}" \
             --generate-notes \
+            --notes-file "${notes_file}" \
             --title "Options Pricing Engine ${RELEASE_TAG}"
