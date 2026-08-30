@@ -2,14 +2,17 @@ name: Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -19,38 +22,63 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      - name: Verify tag matches package version
+      - name: Resolve release tag
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           package_version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
-          if [[ "v${package_version}" != "${GITHUB_REF_NAME}" ]]; then
+          release_tag="v${package_version}"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" != "${release_tag}" ]]; then
             echo "Tag ${GITHUB_REF_NAME} does not match package version ${package_version}" >&2
             exit 1
           fi
+          echo "tag=${release_tag}" >> "${GITHUB_OUTPUT}"
+          if gh release view "${release_tag}" >/dev/null 2>&1; then
+            echo "publish=false" >> "${GITHUB_OUTPUT}"
+            echo "Release ${release_tag} already exists; nothing to publish."
+          else
+            echo "publish=true" >> "${GITHUB_OUTPUT}"
+          fi
       - name: Install release environment
+        if: steps.release.outputs.publish == 'true'
         run: uv sync --locked --extra test --extra quality --python 3.11
       - name: Verify source and tests
+        if: steps.release.outputs.publish == 'true'
         run: |
           uv run --no-sync ruff format --check .
           uv run --no-sync ruff check .
           uv run --no-sync mypy src
           uv run --no-sync python -m pytest -m "not performance"
       - name: Build and inspect distributions
+        if: steps.release.outputs.publish == 'true'
         run: |
           uv build
           uv run --no-sync twine check dist/*
           sha256sum dist/* > dist/SHA256SUMS
       - name: Publish GitHub Release
+        if: steps.release.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release create "${GITHUB_REF_NAME}" dist/*
-          --verify-tag
-          --generate-notes
-          --title "Options Pricing Engine ${GITHUB_REF_NAME}"
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          if ! git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "${RELEASE_TAG}" "${GITHUB_SHA}" -m "Options Pricing Engine ${RELEASE_TAG}"
+            git push origin "${RELEASE_TAG}"
+          fi
+          gh release create "${RELEASE_TAG}" dist/* \
+            --verify-tag \
+            --generate-notes \
+            --title "Options Pricing Engine ${RELEASE_TAG}"
