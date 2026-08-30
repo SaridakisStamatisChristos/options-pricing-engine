@@ -1,21 +1,23 @@
 """Heston stochastic-volatility pricing and calibration.
 
-The implementation uses the original semi-closed-form characteristic function,
-Gauss-Laguerre quadrature, and Black implied-volatility inversion. It is a real
-Heston model; no polynomial smile proxy is presented under the Heston name.
+The reference pricing family in this module uses the original semi-closed-form
+characteristic function, Gauss-Laguerre quadrature, and Black implied-volatility
+inversion.  The independent Fang-Oosterlee COS family lives in
+``options_engine.calib.heston_cos`` and deliberately does not replace this
+implementation.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from numbers import Integral, Real
 
 import numpy as np
 import pandas as pd
 from numpy.typing import ArrayLike, NDArray
-from scipy.optimize import brentq, least_squares
+from scipy.optimize import OptimizeResult, brentq, least_squares
 from scipy.special import ndtr
 
 from .boards import CleanBoard
@@ -37,6 +39,12 @@ class HestonConfig:
     spread_floor: float = 1e-4
     holdout_fraction: float = 0.2
     feller_penalty: float = 0.0
+    calibration_mode: str = "per_tenor"
+    pricing_method: str = "gauss_laguerre"
+    cos_terms: int = 256
+    cos_truncation: float = 12.0
+    global_tenor_weighting: str = "equal"
+    holdout_tenors: Sequence[float] | None = None
 
     def __post_init__(self) -> None:
         if not self.seeds or len(self.seeds) > 32:
@@ -74,10 +82,24 @@ class HestonConfig:
         object.__setattr__(self, "min_strikes", int(self.min_strikes))
         if self.weighting not in {"auto", "uniform", "vega", "bid_ask", "hybrid"}:
             raise ValueError("weighting must be 'auto', 'uniform', 'vega', 'bid_ask', or 'hybrid'")
+        if self.calibration_mode not in {"per_tenor", "global"}:
+            raise ValueError("calibration_mode must be 'per_tenor' or 'global'")
+        if self.pricing_method not in {"gauss_laguerre", "cos"}:
+            raise ValueError("pricing_method must be 'gauss_laguerre' or 'cos'")
+        if self.global_tenor_weighting not in {"equal", "observations"}:
+            raise ValueError("global_tenor_weighting must be 'equal' or 'observations'")
+        if (
+            isinstance(self.cos_terms, bool)
+            or not isinstance(self.cos_terms, Integral)
+            or not 32 <= self.cos_terms <= 4096
+        ):
+            raise ValueError("cos_terms must be an integer within [32, 4096]")
+        object.__setattr__(self, "cos_terms", int(self.cos_terms))
         for name, value, low, high in (
             ("spread_floor", self.spread_floor, 1e-8, 1.0),
             ("holdout_fraction", self.holdout_fraction, 0.0, 0.5),
             ("feller_penalty", self.feller_penalty, 0.0, 1e6),
+            ("cos_truncation", self.cos_truncation, 4.0, 40.0),
         ):
             if isinstance(value, bool) or not isinstance(value, Real):
                 raise TypeError(f"{name} must be a real number")
@@ -85,17 +107,58 @@ class HestonConfig:
             if not math.isfinite(normalised) or not low <= normalised <= high:
                 raise ValueError(f"{name} must be within [{low:g}, {high:g}]")
             object.__setattr__(self, name, normalised)
-        if self.tenors is not None:
-            if not 1 <= len(self.tenors) <= 512:
-                raise ValueError("tenors must contain between 1 and 512 entries")
-            if any(isinstance(tenor, bool) or not isinstance(tenor, Real) for tenor in self.tenors):
-                raise TypeError("tenors must contain real numbers")
-            normalized = tuple(float(tenor) for tenor in self.tenors)
+        for name in ("tenors", "holdout_tenors"):
+            values = getattr(self, name)
+            if values is None:
+                continue
+            if not 1 <= len(values) <= 512:
+                raise ValueError(f"{name} must contain between 1 and 512 entries")
+            if any(isinstance(tenor, bool) or not isinstance(tenor, Real) for tenor in values):
+                raise TypeError(f"{name} must contain real numbers")
+            normalized = tuple(float(tenor) for tenor in values)
             if any(not math.isfinite(tenor) or not 0.0 < tenor <= 100.0 for tenor in normalized):
-                raise ValueError("tenors must be finite and within (0, 100]")
+                raise ValueError(f"{name} must be finite and within (0, 100]")
             if len(set(normalized)) != len(normalized):
-                raise ValueError("tenors must not contain duplicates")
-            object.__setattr__(self, "tenors", tuple(sorted(normalized)))
+                raise ValueError(f"{name} must not contain duplicates")
+            object.__setattr__(self, name, tuple(sorted(normalized)))
+        if self.holdout_tenors is not None and self.calibration_mode != "global":
+            raise ValueError("holdout_tenors are supported only in global calibration mode")
+        if self.tenors is not None and self.holdout_tenors is not None:
+            selected = set(self.tenors)
+            if any(tenor not in selected for tenor in self.holdout_tenors):
+                raise ValueError("holdout_tenors must be contained in tenors when tenors is set")
+
+
+@dataclass(frozen=True, slots=True)
+class HestonOptimizerDiagnostics:
+    """Serializable SciPy optimizer evidence for one calibrated parameter set."""
+
+    success: bool
+    status: int
+    message: str
+    evaluations: int
+    jacobian_evaluations: int | None
+    cost: float
+    optimality: float
+    active_mask: tuple[int, ...]
+    seeds_attempted: int
+    seeds_succeeded: int
+    best_seed: int
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "success": self.success,
+            "status": self.status,
+            "message": self.message,
+            "evaluations": self.evaluations,
+            "jacobian_evaluations": self.jacobian_evaluations,
+            "cost": self.cost,
+            "optimality": self.optimality,
+            "active_mask": self.active_mask,
+            "seeds_attempted": self.seeds_attempted,
+            "seeds_succeeded": self.seeds_succeeded,
+            "best_seed": self.best_seed,
+        }
 
 
 @dataclass(slots=True)
@@ -115,6 +178,92 @@ class HestonTenorResult:
     calibration_observations: int = 0
     holdout_observations: int = 0
     parameter_change_l2: float | None = None
+    calibration_mode: str = "per_tenor"
+    in_sample_weighted_rmse: float = math.nan
+    parameter_bound_proximity: dict[str, float] = field(default_factory=dict)
+    optimizer_diagnostics: HestonOptimizerDiagnostics | None = None
+    is_holdout_tenor: bool = False
+
+
+@dataclass(slots=True)
+class HestonCalibrationResult:
+    """Detailed calibration result while ``calibrate`` retains its list API."""
+
+    mode: str
+    tenor_results: list[HestonTenorResult]
+    shared_params: dict[str, float] | None
+    in_sample_weighted_rmse: float
+    holdout_rmse: float | None
+    feller_ratio: float | None
+    parameter_bound_proximity: dict[str, float]
+    optimizer_diagnostics: tuple[HestonOptimizerDiagnostics, ...]
+    calibration_observations: int
+    holdout_observations: int
+    pricing_method: str
+    strike_weighting: str
+    tenor_weighting: str | None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "mode": self.mode,
+            "shared_params": self.shared_params,
+            "in_sample_weighted_rmse": self.in_sample_weighted_rmse,
+            "holdout_rmse": self.holdout_rmse,
+            "feller_ratio": self.feller_ratio,
+            "parameter_bound_proximity": self.parameter_bound_proximity,
+            "optimizer_diagnostics": [item.to_dict() for item in self.optimizer_diagnostics],
+            "calibration_observations": self.calibration_observations,
+            "holdout_observations": self.holdout_observations,
+            "pricing_method": self.pricing_method,
+            "strike_weighting": self.strike_weighting,
+            "tenor_weighting": self.tenor_weighting,
+            "tenors": [
+                {
+                    "tenor": result.tenor,
+                    "rmse": result.rmse,
+                    "in_sample_weighted_rmse": result.in_sample_weighted_rmse,
+                    "holdout_rmse": result.holdout_rmse,
+                    "feller_ratio": result.feller_ratio,
+                    "parameter_bound_proximity": result.parameter_bound_proximity,
+                    "is_holdout_tenor": result.is_holdout_tenor,
+                }
+                for result in self.tenor_results
+            ],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class HestonCalibrationComparison:
+    """Side-by-side evidence; deliberately does not declare a winner."""
+
+    per_tenor: HestonCalibrationResult
+    global_fit: HestonCalibrationResult
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "per_tenor": self.per_tenor.to_dict(),
+            "global": self.global_fit.to_dict(),
+            "global_minus_per_tenor": {
+                "in_sample_weighted_rmse": (
+                    self.global_fit.in_sample_weighted_rmse - self.per_tenor.in_sample_weighted_rmse
+                ),
+                "holdout_rmse": (
+                    None
+                    if self.global_fit.holdout_rmse is None or self.per_tenor.holdout_rmse is None
+                    else self.global_fit.holdout_rmse - self.per_tenor.holdout_rmse
+                ),
+            },
+        }
+
+
+@dataclass(slots=True)
+class _HestonSlice:
+    tenor: float
+    forward: float
+    group: pd.DataFrame
+    weights: NDArray[np.float64]
+    weighting: str
+    holdout: NDArray[np.bool_]
 
 
 def _heston_characteristic_function(
@@ -149,7 +298,7 @@ def _heston_characteristic_function(
     )
 
 
-def heston_call_prices(
+def _validated_heston_inputs(
     forward: float,
     strikes: ArrayLike,
     tenor: float,
@@ -160,7 +309,7 @@ def heston_call_prices(
     vol_of_vol: float,
     rho: float,
 ) -> NDArray[np.float64]:
-    """Return undiscounted European call prices under the Heston model."""
+    """Validate the domain shared by all deterministic Heston pricers."""
 
     strikes_input = np.asarray(strikes)
     if strikes_input.dtype.kind not in "iuf" or strikes_input.dtype.kind == "b":
@@ -201,6 +350,65 @@ def heston_call_prices(
         or not -1.0 < rho < 1.0
     ):
         raise ValueError("invalid Heston parameters")
+    return np.asarray(strikes_array, dtype=np.float64)
+
+
+def _validated_heston_call_prices(
+    forward: float,
+    strikes: NDArray[np.float64],
+    raw_prices: ArrayLike,
+    *,
+    method: str,
+) -> NDArray[np.float64]:
+    """Enforce model-independent bounds and strike-shape constraints."""
+
+    prices = np.asarray(raw_prices, dtype=float)
+    if prices.shape != strikes.shape or not np.isfinite(prices).all():
+        raise ValueError(f"Heston {method} produced non-finite option prices")
+    intrinsic = np.maximum(forward - strikes, 0.0)
+    price_tolerance = 1e-7 * max(1.0, forward)
+    if np.any(prices < intrinsic - price_tolerance) or np.any(prices > forward + price_tolerance):
+        raise ValueError(f"Heston {method} violated model-independent price bounds")
+
+    order = np.argsort(strikes)
+    sorted_strikes = strikes[order]
+    sorted_prices = prices[order]
+    unique_strikes, unique_indices = np.unique(sorted_strikes, return_index=True)
+    unique_prices = sorted_prices[unique_indices]
+    if unique_strikes.size >= 2:
+        slopes = np.diff(unique_prices) / np.diff(unique_strikes)
+        slope_tolerance = 1e-7
+        if np.any(slopes < -1.0 - slope_tolerance) or np.any(slopes > slope_tolerance):
+            raise ValueError(f"Heston {method} violated call-spread bounds")
+        if unique_strikes.size >= 3 and np.any(np.diff(slopes) < -slope_tolerance):
+            raise ValueError(f"Heston {method} violated call-price convexity")
+
+    return np.asarray(np.clip(prices, intrinsic, forward), dtype=np.float64)
+
+
+def heston_call_prices(
+    forward: float,
+    strikes: ArrayLike,
+    tenor: float,
+    *,
+    v0: float,
+    theta: float,
+    kappa: float,
+    vol_of_vol: float,
+    rho: float,
+) -> NDArray[np.float64]:
+    """Return undiscounted calls using 64-point Gauss-Laguerre inversion."""
+
+    strikes_array = _validated_heston_inputs(
+        forward,
+        strikes,
+        tenor,
+        v0=v0,
+        theta=theta,
+        kappa=kappa,
+        vol_of_vol=vol_of_vol,
+        rho=rho,
+    )
 
     u = _QUADRATURE_NODES.astype(np.complex128)
     common = {
@@ -233,29 +441,12 @@ def heston_call_prices(
     p1 = 0.5 + (integrand_p1 @ _QUADRATURE_FACTORS) / math.pi
     p2 = 0.5 + (integrand_p2 @ _QUADRATURE_FACTORS) / math.pi
     raw_prices = forward * p1 - strikes_array * p2
-    if not np.isfinite(raw_prices).all():
-        raise ValueError("Heston parameters produced non-finite option prices")
-    intrinsic = np.maximum(forward - strikes_array, 0.0)
-    price_tolerance = 1e-7 * max(1.0, forward)
-    if np.any(raw_prices < intrinsic - price_tolerance) or np.any(
-        raw_prices > forward + price_tolerance
-    ):
-        raise ValueError("Heston quadrature violated model-independent price bounds")
-
-    order = np.argsort(strikes_array)
-    sorted_strikes = strikes_array[order]
-    sorted_prices = raw_prices[order]
-    unique_strikes, unique_indices = np.unique(sorted_strikes, return_index=True)
-    unique_prices = sorted_prices[unique_indices]
-    if unique_strikes.size >= 2:
-        slopes = np.diff(unique_prices) / np.diff(unique_strikes)
-        slope_tolerance = 1e-7
-        if np.any(slopes < -1.0 - slope_tolerance) or np.any(slopes > slope_tolerance):
-            raise ValueError("Heston quadrature violated call-spread bounds")
-        if unique_strikes.size >= 3 and np.any(np.diff(slopes) < -slope_tolerance):
-            raise ValueError("Heston quadrature violated call-price convexity")
-
-    return np.asarray(np.clip(raw_prices, intrinsic, forward), dtype=np.float64)
+    return _validated_heston_call_prices(
+        forward,
+        strikes_array,
+        raw_prices,
+        method="Gauss-Laguerre quadrature",
+    )
 
 
 def _black_call_price(forward: float, strike: float, tenor: float, sigma: float) -> float:
@@ -317,7 +508,7 @@ def heston_implied_volatilities(
 
 
 class HestonCalibrator:
-    """Calibrate the full five-parameter Heston smile per tenor."""
+    """Calibrate Heston per tenor or as one coherent multi-tenor process."""
 
     def __init__(self, config: HestonConfig | None = None) -> None:
         if config is not None and not isinstance(config, HestonConfig):
@@ -330,11 +521,23 @@ class HestonCalibrator:
         *,
         forward_curve: Mapping[float, float] | None = None,
     ) -> list[HestonTenorResult]:
+        """Return tenor results, preserving the pre-global public contract."""
+
+        return self.calibrate_detailed(clean_board, forward_curve=forward_curve).tenor_results
+
+    def calibrate_detailed(
+        self,
+        clean_board: CleanBoard,
+        *,
+        forward_curve: Mapping[float, float] | None = None,
+    ) -> HestonCalibrationResult:
+        """Calibrate with aggregate fit, holdout, bound, and optimizer evidence."""
+
         if not isinstance(clean_board, CleanBoard):
             raise TypeError("clean_board must be a CleanBoard")
         data = clean_board.quotes
         if data.empty:
-            return []
+            return self._empty_detailed_result()
         if len(data) > 100_000:
             raise ValueError("clean board exceeds the 100000-row calibration limit")
         if forward_curve is not None and not isinstance(forward_curve, Mapping):
@@ -358,7 +561,7 @@ class HestonCalibrator:
         ):
             raise ValueError("clean board contains values outside the Heston calibration domain")
 
-        results: list[HestonTenorResult] = []
+        slices: list[_HestonSlice] = []
         allowed_tenors = self._config.tenors
         for tenor, group in data.groupby("tenor", sort=True):
             tenor_value = float(tenor)
@@ -376,14 +579,422 @@ class HestonCalibrator:
             if len(collapsed) < self._config.min_strikes:
                 continue
             forward = self._resolve_forward(tenor_value, group, forward_curve)
-            result = self._calibrate_single_tenor(forward, tenor_value, collapsed)
+            weights, weighting_method = self._weights(forward, tenor_value, collapsed)
+            full_holdout = self._config.holdout_tenors is not None and any(
+                math.isclose(held, tenor_value, rel_tol=0.0, abs_tol=1e-9)
+                for held in self._config.holdout_tenors
+            )
+            holdout = (
+                np.ones(len(collapsed), dtype=bool)
+                if full_holdout
+                else self._holdout_mask(len(collapsed))
+            )
+            slices.append(
+                _HestonSlice(
+                    tenor=tenor_value,
+                    forward=forward,
+                    group=collapsed,
+                    weights=weights,
+                    weighting=weighting_method,
+                    holdout=holdout,
+                )
+            )
+
+        if not slices:
+            return self._empty_detailed_result()
+        if self._config.holdout_tenors is not None:
+            missing_holdouts = [
+                held
+                for held in self._config.holdout_tenors
+                if not any(
+                    math.isclose(held, current.tenor, rel_tol=0.0, abs_tol=1e-9)
+                    for current in slices
+                )
+            ]
+            if missing_holdouts:
+                raise ValueError(
+                    "holdout_tenors are absent from the retained calibration board: "
+                    f"{missing_holdouts}"
+                )
+        if self._config.calibration_mode == "global":
+            return self._calibrate_global(slices)
+
+        results: list[HestonTenorResult] = []
+        for current_slice in slices:
+            result = self._calibrate_single_tenor(
+                current_slice.forward,
+                current_slice.tenor,
+                current_slice.group,
+            )
             if results:
                 result.parameter_change_l2 = self._parameter_change_l2(
                     results[-1].params,
                     result.params,
                 )
             results.append(result)
-        return results
+        return self._summarise_per_tenor(results, slices)
+
+    def compare_modes(
+        self,
+        clean_board: CleanBoard,
+        *,
+        forward_curve: Mapping[float, float] | None = None,
+    ) -> HestonCalibrationComparison:
+        """Fit both architectures and report them side by side without ranking."""
+
+        per_config = replace(
+            self._config,
+            calibration_mode="per_tenor",
+            holdout_tenors=None,
+        )
+        # Whole-tenor exclusion has no per-tenor analogue: an independent
+        # smile cannot be fitted with every quote removed. Clear it for both
+        # sides so the comparison uses identical deterministic strike
+        # holdouts. Whole-tenor extrapolation remains available through a
+        # direct global ``calibrate_detailed`` call.
+        global_config = replace(
+            self._config,
+            calibration_mode="global",
+            holdout_tenors=None,
+        )
+        per_tenor = HestonCalibrator(per_config).calibrate_detailed(
+            clean_board,
+            forward_curve=forward_curve,
+        )
+        global_fit = HestonCalibrator(global_config).calibrate_detailed(
+            clean_board,
+            forward_curve=forward_curve,
+        )
+        return HestonCalibrationComparison(per_tenor=per_tenor, global_fit=global_fit)
+
+    def _empty_detailed_result(self) -> HestonCalibrationResult:
+        return HestonCalibrationResult(
+            mode=self._config.calibration_mode,
+            tenor_results=[],
+            shared_params=None,
+            in_sample_weighted_rmse=math.nan,
+            holdout_rmse=None,
+            feller_ratio=None,
+            parameter_bound_proximity={},
+            optimizer_diagnostics=(),
+            calibration_observations=0,
+            holdout_observations=0,
+            pricing_method=self._config.pricing_method,
+            strike_weighting=self._config.weighting,
+            tenor_weighting=(
+                self._config.global_tenor_weighting
+                if self._config.calibration_mode == "global"
+                else None
+            ),
+        )
+
+    def _summarise_per_tenor(
+        self,
+        results: list[HestonTenorResult],
+        slices: Sequence[_HestonSlice],
+    ) -> HestonCalibrationResult:
+        calibration_count = sum(result.calibration_observations for result in results)
+        holdout_count = sum(result.holdout_observations for result in results)
+        weighted_squared_error = 0.0
+        calibration_weight_sum = 0.0
+        for result, current in zip(results, slices, strict=True):
+            calibration = ~current.holdout
+            errors = result.model_vols - result.market_vols
+            weighted_squared_error += float(
+                np.sum(current.weights[calibration] * errors[calibration] ** 2)
+            )
+            calibration_weight_sum += float(np.sum(current.weights[calibration]))
+        in_sample = math.sqrt(weighted_squared_error / calibration_weight_sum)
+        holdout = (
+            math.sqrt(
+                sum(
+                    (result.holdout_rmse or 0.0) ** 2 * result.holdout_observations
+                    for result in results
+                )
+                / holdout_count
+            )
+            if holdout_count
+            else None
+        )
+        methods = {result.weighting for result in results}
+        return HestonCalibrationResult(
+            mode="per_tenor",
+            tenor_results=results,
+            shared_params=None,
+            in_sample_weighted_rmse=in_sample,
+            holdout_rmse=holdout,
+            feller_ratio=None,
+            parameter_bound_proximity={},
+            optimizer_diagnostics=tuple(
+                result.optimizer_diagnostics
+                for result in results
+                if result.optimizer_diagnostics is not None
+            ),
+            calibration_observations=calibration_count,
+            holdout_observations=holdout_count,
+            pricing_method=self._config.pricing_method,
+            strike_weighting=next(iter(methods)) if len(methods) == 1 else "mixed",
+            tenor_weighting=None,
+        )
+
+    @staticmethod
+    def _raw_bounds() -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        lower = np.array(
+            [math.log(1e-4), math.log(1e-4), math.log(1e-2), math.log(1e-2), -3.8],
+            dtype=float,
+        )
+        upper = np.array(
+            [math.log(4.0), math.log(4.0), math.log(20.0), math.log(5.0), 3.8],
+            dtype=float,
+        )
+        return lower, upper
+
+    @staticmethod
+    def _parameter_bound_proximity(
+        raw: NDArray[np.float64],
+        lower: NDArray[np.float64],
+        upper: NDArray[np.float64],
+    ) -> dict[str, float]:
+        """Return zero at the transformed-bound centre and one at a bound."""
+
+        unit = np.clip((raw - lower) / (upper - lower), 0.0, 1.0)
+        proximity = np.abs(2.0 * unit - 1.0)
+        names = ("v0", "theta", "kappa", "vol_of_vol", "rho")
+        return {name: float(value) for name, value in zip(names, proximity, strict=True)}
+
+    def _optimise(
+        self,
+        objective: Callable[[NDArray[np.float64]], NDArray[np.float64]],
+        initial: NDArray[np.float64],
+        lower: NDArray[np.float64],
+        upper: NDArray[np.float64],
+        *,
+        residual_count: int,
+        failure_label: str,
+    ) -> tuple[NDArray[np.float64], HestonOptimizerDiagnostics]:
+        best_raw: NDArray[np.float64] | None = None
+        best_fit: OptimizeResult | None = None
+        best_seed = 0
+        best_rmse = float("inf")
+        succeeded = 0
+        for seed in self._config.seeds:
+            start = initial.copy()
+            if seed:
+                rng = np.random.default_rng(seed)
+                start += rng.normal(0.0, 0.15, size=start.size)
+            start = np.clip(start, lower + 1e-8, upper - 1e-8)
+            fit = least_squares(
+                objective,
+                start,
+                bounds=(lower, upper),
+                xtol=self._config.tolerance,
+                ftol=self._config.tolerance,
+                gtol=self._config.tolerance,
+                max_nfev=self._config.max_iterations,
+            )
+            if not bool(getattr(fit, "success", False)):
+                continue
+            fit_values = np.asarray(getattr(fit, "fun", np.array([math.nan])), dtype=float)
+            if fit_values.size < residual_count or not np.all(np.isfinite(fit_values)):
+                continue
+            succeeded += 1
+            residuals = fit_values[:residual_count]
+            rmse = float(np.sqrt(np.mean(residuals**2)))
+            if not math.isfinite(rmse) or rmse >= 5.0:
+                continue
+            if rmse < best_rmse:
+                best_rmse = rmse
+                best_raw = np.asarray(fit.x, dtype=float)
+                best_fit = fit
+                best_seed = seed
+
+        if best_raw is None or best_fit is None:
+            raise RuntimeError(f"Heston calibration failed for {failure_label}")
+        active = np.asarray(
+            getattr(best_fit, "active_mask", np.zeros(best_raw.size, dtype=int)),
+            dtype=int,
+        )
+        jacobian_evaluations = getattr(best_fit, "njev", None)
+        fit_cost = getattr(best_fit, "cost", None)
+        if fit_cost is None:
+            fit_cost = 0.5 * float(np.sum(np.asarray(best_fit.fun, dtype=float) ** 2))
+        diagnostics = HestonOptimizerDiagnostics(
+            success=True,
+            status=int(getattr(best_fit, "status", 0)),
+            message=str(getattr(best_fit, "message", "optimizer reported success")),
+            evaluations=int(getattr(best_fit, "nfev", 0)),
+            jacobian_evaluations=(
+                None if jacobian_evaluations is None else int(jacobian_evaluations)
+            ),
+            cost=float(fit_cost),
+            optimality=float(getattr(best_fit, "optimality", math.nan)),
+            active_mask=tuple(int(value) for value in active),
+            seeds_attempted=len(self._config.seeds),
+            seeds_succeeded=succeeded,
+            best_seed=best_seed,
+        )
+        return best_raw, diagnostics
+
+    def _global_weights(self, slices: Sequence[_HestonSlice]) -> list[NDArray[np.float64]]:
+        adjusted = [current.weights.copy() for current in slices]
+        calibration_slices = [
+            index for index, current in enumerate(slices) if np.any(~current.holdout)
+        ]
+        if len(calibration_slices) < 2:
+            raise ValueError("global Heston calibration requires at least two non-holdout tenors")
+        total_observations = sum(
+            int(np.count_nonzero(~slices[index].holdout)) for index in calibration_slices
+        )
+        if total_observations < 7:
+            raise ValueError("global Heston calibration has fewer than seven observations")
+        for index in calibration_slices:
+            calibration = ~slices[index].holdout
+            target_sum = (
+                total_observations / len(calibration_slices)
+                if self._config.global_tenor_weighting == "equal"
+                else int(np.count_nonzero(calibration))
+            )
+            current_sum = float(np.sum(adjusted[index][calibration]))
+            adjusted[index] *= target_sum / current_sum
+        return adjusted
+
+    def _calibrate_global(self, slices: Sequence[_HestonSlice]) -> HestonCalibrationResult:
+        adjusted_weights = self._global_weights(slices)
+        calibration_count = sum(int(np.count_nonzero(~current.holdout)) for current in slices)
+        objective_size = calibration_count + int(self._config.feller_penalty > 0.0)
+        calibration_slices = [current for current in slices if np.any(~current.holdout)]
+        shortest = calibration_slices[0]
+        longest = calibration_slices[-1]
+
+        def atm_variance(current: _HestonSlice) -> float:
+            strikes = current.group["strike"].to_numpy(dtype=float)
+            market_vols = current.group["mid_iv"].to_numpy(dtype=float)
+            atm = float(market_vols[np.argmin(np.abs(strikes - current.forward))])
+            return max(atm**2, 1e-4)
+
+        initial = np.array(
+            [
+                math.log(atm_variance(shortest)),
+                math.log(atm_variance(longest)),
+                math.log(1.5),
+                math.log(0.5),
+                -0.3,
+            ],
+            dtype=float,
+        )
+        lower, upper = self._raw_bounds()
+
+        def objective(raw: NDArray[np.float64]) -> NDArray[np.float64]:
+            params = self._unpack(raw)
+            parts: list[NDArray[np.float64]] = []
+            try:
+                for current, weights in zip(slices, adjusted_weights, strict=True):
+                    calibration = ~current.holdout
+                    if not np.any(calibration):
+                        continue
+                    strikes = current.group["strike"].to_numpy(dtype=float)
+                    market = current.group["mid_iv"].to_numpy(dtype=float)
+                    model = self._model_vols(current.forward, strikes, current.tenor, params)
+                    parts.append(
+                        np.sqrt(weights[calibration]) * (model[calibration] - market[calibration])
+                    )
+            except ValueError:
+                return np.full(objective_size, 10.0, dtype=float)
+            residuals = np.concatenate(parts)
+            residuals = np.where(np.isfinite(residuals), residuals, 10.0)
+            if self._config.feller_penalty > 0.0:
+                feller_ratio = 2.0 * params["kappa"] * params["theta"] / params["vol_of_vol"] ** 2
+                residuals = np.append(
+                    residuals,
+                    math.sqrt(self._config.feller_penalty) * max(0.0, 1.0 - feller_ratio),
+                )
+            return np.asarray(residuals, dtype=float)
+
+        best_raw, optimizer = self._optimise(
+            objective,
+            initial,
+            lower,
+            upper,
+            residual_count=calibration_count,
+            failure_label="global multi-tenor fit",
+        )
+        params = self._unpack(best_raw)
+        bound_proximity = self._parameter_bound_proximity(best_raw, lower, upper)
+        feller_ratio = 2.0 * params["kappa"] * params["theta"] / params["vol_of_vol"] ** 2
+        results: list[HestonTenorResult] = []
+        weighted_squared_error = 0.0
+        weight_sum = 0.0
+        holdout_squared_error = 0.0
+        holdout_count = 0
+        for index, (current, weights) in enumerate(zip(slices, adjusted_weights, strict=True)):
+            strikes = current.group["strike"].to_numpy(dtype=float)
+            market = current.group["mid_iv"].to_numpy(dtype=float)
+            model = self._model_vols(current.forward, strikes, current.tenor, params)
+            if not np.isfinite(model).all():
+                raise RuntimeError(
+                    f"Heston global calibration produced invalid values for tenor {current.tenor}"
+                )
+            errors = model - market
+            calibration = ~current.holdout
+            if np.any(calibration):
+                weighted_squared_error += float(
+                    np.sum(weights[calibration] * errors[calibration] ** 2)
+                )
+                weight_sum += float(np.sum(weights[calibration]))
+                in_sample = float(
+                    np.sqrt(
+                        np.average(errors[calibration] ** 2, weights=current.weights[calibration])
+                    )
+                )
+            else:
+                in_sample = math.nan
+            if np.any(current.holdout):
+                current_holdout_rmse = float(np.sqrt(np.mean(errors[current.holdout] ** 2)))
+                holdout_squared_error += float(np.sum(errors[current.holdout] ** 2))
+                holdout_count += int(np.count_nonzero(current.holdout))
+            else:
+                current_holdout_rmse = None
+            results.append(
+                HestonTenorResult(
+                    tenor=current.tenor,
+                    params=params.copy(),
+                    rmse=float(np.sqrt(np.mean(errors**2))),
+                    strikes=strikes.copy(),
+                    market_vols=market.copy(),
+                    model_vols=model.copy(),
+                    weighted_rmse=float(np.sqrt(np.average(errors**2, weights=current.weights))),
+                    holdout_rmse=current_holdout_rmse,
+                    feller_ratio=feller_ratio,
+                    feller_satisfied=feller_ratio >= 1.0,
+                    weighting=current.weighting,
+                    calibration_observations=int(np.count_nonzero(calibration)),
+                    holdout_observations=int(np.count_nonzero(current.holdout)),
+                    parameter_change_l2=None if index == 0 else 0.0,
+                    calibration_mode="global",
+                    in_sample_weighted_rmse=in_sample,
+                    parameter_bound_proximity=bound_proximity.copy(),
+                    optimizer_diagnostics=optimizer,
+                    is_holdout_tenor=bool(np.all(current.holdout)),
+                )
+            )
+        methods = {current.weighting for current in slices}
+        return HestonCalibrationResult(
+            mode="global",
+            tenor_results=results,
+            shared_params=params,
+            in_sample_weighted_rmse=math.sqrt(weighted_squared_error / weight_sum),
+            holdout_rmse=(
+                math.sqrt(holdout_squared_error / holdout_count) if holdout_count else None
+            ),
+            feller_ratio=feller_ratio,
+            parameter_bound_proximity=bound_proximity,
+            optimizer_diagnostics=(optimizer,),
+            calibration_observations=calibration_count,
+            holdout_observations=holdout_count,
+            pricing_method=self._config.pricing_method,
+            strike_weighting=next(iter(methods)) if len(methods) == 1 else "mixed",
+            tenor_weighting=self._config.global_tenor_weighting,
+        )
 
     @staticmethod
     def _parameter_change_l2(
@@ -492,8 +1103,7 @@ class HestonCalibrator:
             [math.log(variance), math.log(variance), math.log(1.5), math.log(0.5), -0.3],
             dtype=float,
         )
-        lower = np.array([math.log(1e-4), math.log(1e-4), math.log(1e-2), math.log(1e-2), -3.8])
-        upper = np.array([math.log(4.0), math.log(4.0), math.log(20.0), math.log(5.0), 3.8])
+        lower, upper = self._raw_bounds()
         objective_size = int(np.count_nonzero(calibration)) + int(self._config.feller_penalty > 0.0)
 
         def objective(raw: NDArray[np.float64]) -> NDArray[np.float64]:
@@ -515,36 +1125,14 @@ class HestonCalibrator:
                 residuals = np.append(residuals, penalty)
             return np.asarray(residuals, dtype=float)
 
-        best_raw: NDArray[np.float64] | None = None
-        best_rmse = float("inf")
-        for seed in self._config.seeds or (0,):
-            start = initial.copy()
-            if seed:
-                rng = np.random.default_rng(seed)
-                start += rng.normal(0.0, 0.15, size=start.size)
-            start = np.clip(start, lower + 1e-8, upper - 1e-8)
-            fit = least_squares(
-                objective,
-                start,
-                bounds=(lower, upper),
-                xtol=self._config.tolerance,
-                ftol=self._config.tolerance,
-                gtol=self._config.tolerance,
-                max_nfev=self._config.max_iterations,
-            )
-            if not fit.success or not np.all(np.isfinite(fit.fun)):
-                continue
-            calibration_count = int(np.count_nonzero(calibration))
-            fit_residuals = np.asarray(fit.fun, dtype=float)[:calibration_count]
-            rmse = float(np.sqrt(np.mean(fit_residuals**2)))
-            if not math.isfinite(rmse) or rmse >= 5.0:
-                continue
-            if rmse < best_rmse:
-                best_rmse = rmse
-                best_raw = np.asarray(fit.x, dtype=float)
-
-        if best_raw is None:
-            raise RuntimeError(f"Heston calibration failed for tenor {tenor}")
+        best_raw, optimizer = self._optimise(
+            objective,
+            initial,
+            lower,
+            upper,
+            residual_count=int(np.count_nonzero(calibration)),
+            failure_label=f"tenor {tenor}",
+        )
         params = self._unpack(best_raw)
         model_vols = self._model_vols(forward, strikes, tenor, params)
         if not np.isfinite(model_vols).all():
@@ -552,6 +1140,9 @@ class HestonCalibrator:
         errors = model_vols - market_vols
         rmse = float(np.sqrt(np.mean(errors**2)))
         weighted_rmse = float(np.sqrt(np.average(errors**2, weights=weights)))
+        in_sample_weighted_rmse = float(
+            np.sqrt(np.average(errors[calibration] ** 2, weights=weights[calibration]))
+        )
         holdout_rmse = float(np.sqrt(np.mean(errors[holdout] ** 2))) if np.any(holdout) else None
         feller_ratio = 2.0 * params["kappa"] * params["theta"] / params["vol_of_vol"] ** 2
         return HestonTenorResult(
@@ -568,6 +1159,10 @@ class HestonCalibrator:
             weighting=weighting_method,
             calibration_observations=int(np.count_nonzero(calibration)),
             holdout_observations=int(np.count_nonzero(holdout)),
+            calibration_mode="per_tenor",
+            in_sample_weighted_rmse=in_sample_weighted_rmse,
+            parameter_bound_proximity=self._parameter_bound_proximity(best_raw, lower, upper),
+            optimizer_diagnostics=optimizer,
         )
 
     @staticmethod
@@ -581,23 +1176,37 @@ class HestonCalibrator:
             "rho": float(np.tanh(values[4])),
         }
 
-    @staticmethod
     def _model_vols(
+        self,
         forward: float,
         strikes: NDArray[np.float64],
         tenor: float,
         params: Mapping[str, float],
     ) -> NDArray[np.float64]:
-        return heston_implied_volatilities(
-            forward,
-            strikes,
-            tenor,
-            v0=params["v0"],
-            theta=params["theta"],
-            kappa=params["kappa"],
-            vol_of_vol=params["vol_of_vol"],
-            rho=params["rho"],
-        )
+        arguments = {
+            "v0": params["v0"],
+            "theta": params["theta"],
+            "kappa": params["kappa"],
+            "vol_of_vol": params["vol_of_vol"],
+            "rho": params["rho"],
+        }
+        if self._config.pricing_method == "cos":
+            from .heston_cos import HestonCOSConfig, heston_cos_implied_volatilities
+
+            return heston_cos_implied_volatilities(
+                forward,
+                strikes,
+                tenor,
+                config=HestonCOSConfig(
+                    terms=self._config.cos_terms,
+                    truncation=self._config.cos_truncation,
+                    adaptive=False,
+                    max_terms=self._config.cos_terms,
+                    max_truncation=self._config.cos_truncation,
+                ),
+                **arguments,
+            )
+        return heston_implied_volatilities(forward, strikes, tenor, **arguments)
 
 
 # Compatibility alias for callers of versions <=1.0.1.
@@ -605,8 +1214,11 @@ HestonQECalibrator = HestonCalibrator
 
 
 __all__ = [
+    "HestonCalibrationComparison",
+    "HestonCalibrationResult",
     "HestonCalibrator",
     "HestonConfig",
+    "HestonOptimizerDiagnostics",
     "HestonQECalibrator",
     "HestonTenorResult",
     "heston_call_prices",

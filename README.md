@@ -27,7 +27,7 @@ decision or production risk process.
 | American valuation | Adaptive CRR; cross-fitted Longstaff–Schwartz; Crank–Nicolson/Rannacher PDE with independent PSOR and penalty solvers | LSMC distinguishes its raw policy estimate from its bounded reported estimate |
 | Monte Carlo inference | Antithetic pairs, cross-fitted discounted-underlying control variate, independently scrambled Sobol replicates, Student-t intervals over independent units | Raw and no-arbitrage-projected estimates and intervals are both retained; unseeded requests bypass cache |
 | Greeks | Analytic Black–Scholes; tree/finite-difference CRR; pathwise and likelihood-ratio Monte Carlo estimators with fallbacks | Monte Carlo Greeks include estimator metadata |
-| Smile calibration | SABR and five-parameter Heston characteristic-function calibration with liquidity-aware weights and deterministic holdouts | Model selection uses AICc; Heston reports Feller and cross-tenor stability diagnostics |
+| Smile calibration | SABR; Heston with independent Gauss–Laguerre/COS pricing and optional per-tenor or globally shared parameters | Weighting and deterministic strike/tenor holdouts are explicit; both Heston modes report Feller, bound-proximity, and optimizer diagnostics |
 | Volatility surfaces | Raw-SVI slice diagnostics; global power-law SSVI with monotone ATM variance; strike, parity, convexity, and calendar checks | SSVI enforces sufficient wing/curvature constraints and validates density on a dense grid |
 | Service controls | OIDC/JWKS authentication, scopes, bounded bodies, rate limits, back-pressure, metrics, replay capsules | Rate-limit/idempotency/replay state is process-local; run one worker per container |
 
@@ -79,6 +79,31 @@ retains the previous grid family. American exercise is configurable with
 `refinement_levels=2` or `3` adds fixed-domain convergence and justified
 Richardson diagnostics. The legacy `options_engine.core.pricing_models` import
 path remains a compatibility facade.
+
+Heston keeps Gauss–Laguerre as the default pricing/calibration family and
+exposes COS independently. Global calibration is opt-in and the historical
+list-returning API is unchanged:
+
+```python
+from options_engine.calib import HestonCalibrator, HestonConfig, heston_cos_call_prices
+
+reference_prices = heston_cos_call_prices(
+    100.0,
+    [80.0, 100.0, 120.0],
+    1.0,
+    v0=0.04,
+    theta=0.05,
+    kappa=1.7,
+    vol_of_vol=0.45,
+    rho=-0.6,
+)
+global_fit = HestonCalibrator(
+    HestonConfig(calibration_mode="global", global_tenor_weighting="equal")
+).calibrate_detailed(clean_board)
+```
+
+Use `compare_modes(clean_board)` to obtain global and per-tenor metrics side by
+side; it intentionally does not select a winner.
 
 Contract identifiers hash the exact economic terms, including option and
 exercise style. Reusing the same symbol does not alias nearby strikes or

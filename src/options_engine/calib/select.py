@@ -179,12 +179,21 @@ class SurfaceBuilder:
             },
             "heston_diagnostics": {
                 result.tenor: {
+                    "calibration_mode": result.calibration_mode,
                     "weighted_rmse": result.weighted_rmse,
+                    "in_sample_weighted_rmse": result.in_sample_weighted_rmse,
                     "holdout_rmse": result.holdout_rmse,
+                    "is_holdout_tenor": result.is_holdout_tenor,
                     "feller_ratio": result.feller_ratio,
                     "feller_satisfied": result.feller_satisfied,
                     "weighting": result.weighting,
                     "parameter_change_l2": result.parameter_change_l2,
+                    "parameter_bound_proximity": result.parameter_bound_proximity,
+                    "optimizer": (
+                        result.optimizer_diagnostics.to_dict()
+                        if result.optimizer_diagnostics is not None
+                        else None
+                    ),
                 }
                 for result in heston_results
             },

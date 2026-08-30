@@ -1,6 +1,11 @@
 # Release notes
 
-## Unreleased — PDE refinement and exercise cross-validation
+## 2.2.0 — numerical cross-validation and coherent Heston calibration
+
+This release adds independent numerical families for American PDE exercise and
+European Heston pricing, strengthens convergence evidence, and introduces an
+optional globally coherent Heston calibration architecture without changing
+the established default models or public compatibility paths.
 
 - Replaced the default uniform-only PDE mesh with a sinh-transformed mesh that
   contains spot and strike exactly, while retaining explicit uniform-grid
@@ -13,6 +18,15 @@
 - Expanded the external fixtures with deep ITM/OTM, seven-day, high-volatility,
   dividend, and negative-rate American cases. No numerical result is sourced
   from the implementation under test.
+- Added an independent Fang–Oosterlee COS European Heston pricer while retaining
+  64-point Gauss–Laguerre as the default reference family. Adaptive series and
+  tail-truncation diagnostics fail closed when a configured numerical budget is
+  insufficient.
+- Added optional global multi-tenor Heston calibration with one shared
+  parameter set, equal-tenor or observation-count weighting, strike and full-
+  tenor holdouts, parameter-bound proximity, Feller, and optimizer diagnostics.
+  The existing per-tenor mode and list-returning calibration API remain the
+  defaults.
 
 ## 2.1.0 — independent solvers and honest estimator semantics
 

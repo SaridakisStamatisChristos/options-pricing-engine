@@ -8,7 +8,8 @@ family for regression testing:
   difference American values, including labeled deep-ITM/OTM, short-maturity,
   high-volatility, dividend, and negative-rate regimes.
 - `quantlib_heston_v1.json`: analytic Heston values using integration order
-  192.
+  192. Both the Gauss–Laguerre and independent Fang–Oosterlee COS families are
+  checked against these committed values.
 
 The files include the valuation date, day-count convention, engine, and grid
 settings required to interpret the numbers. QuantLib is deliberately not a

@@ -174,23 +174,72 @@ point.
 
 ### Heston
 
-Heston pricing evaluates the characteristic function with 64-point
-Gauss–Laguerre quadrature and inverts call prices to Black implied volatility.
+Two independent transform families price European Heston calls:
+
+- `heston_call_prices` retains the 64-point Gauss–Laguerre inversion of the two
+  Heston probabilities. It is the backward-compatible default and remains the
+  fastest implementation on the committed NumPy benchmark.
+- `heston_cos_call_prices` implements the Fang–Oosterlee cosine expansion. Its
+  interval uses the first two closed-form cumulants of `log(S_T/F)`. The second
+  cumulant is evaluated with long-double intermediates, with its exact
+  zero-mean-reversion limit used to avoid cancellation when `kappa*T` is tiny,
+  and checked in tests against derivatives of `log(phi)`. Strike-relative
+  payoff coefficients avoid unsafe exponentials; calls use an OTM expansion
+  when safe and otherwise the bounded put payoff plus parity.
+
+Adaptive COS mode separately checks series resolution (full versus half term
+count) and tail truncation (successively wider cumulant intervals). A solve
+that exhausts `max_terms`/`max_truncation` raises instead of returning a
+finite-looking unconverged price. Fixed-cost COS mode is available for
+calibration after a user-selected convergence study. Both families enforce
+intrinsic/forward bounds, call-spread limits, and convexity. The committed
+QuantLib 1.43 fixture is checked against COS directly, and a broader parameter
+grid cross-checks COS against Gauss–Laguerre.
+
 The calibrated parameters are initial variance, long-run variance, mean
 reversion, volatility of variance, and spot/variance correlation. Multi-start
-bounded least squares is deterministic for fixed seeds.
+bounded least squares is deterministic for fixed seeds. The default
+`calibration_mode="per_tenor"` preserves the previous independent-smile fit.
+`calibration_mode="global"` fits one parameter vector jointly to at least two
+training maturities, producing one coherent time-homogeneous Heston process
+over those maturities.
 
-Calibration can use uniform, Black-vega, inverse bid/ask-width, or hybrid
-weights. A deterministic strike holdout reports out-of-sample IV RMSE without
-making the result depend on random splitting. Each tenor reports the Feller
-ratio (2\kappa\theta/\xi^2), whether it is at least one, and the parameter
-change from the previous tenor. The Feller condition is diagnostic rather than
-a hard existence constraint; optional regularization can penalize violations.
+Strike weighting can be uniform, squared Black-vega, inverse squared bid/ask
+width, or the product of vega and spread weights (`hybrid`). Each slice is
+normalized before fitting. In global mode, `global_tenor_weighting="equal"`
+gives every training tenor the same total objective weight;
+`"observations"` lets tenors contribute in proportion to their retained quote
+count.
+
+A deterministic strike holdout reports out-of-sample IV RMSE without random
+splitting. Global mode can additionally exclude complete maturities through
+`holdout_tenors`, which tests the shared process out of tenor rather than only
+out of strike. Detailed results report:
+
+- in-sample weighted IV RMSE and unweighted holdout IV RMSE;
+- Feller ratio `2*kappa*theta/vol_of_vol**2` and satisfaction flag;
+- parameter-bound proximity on `[0, 1]`, where zero is the center of the
+  transformed optimizer interval and one is an active boundary;
+- termination status/message, function/Jacobian evaluations, cost, optimality,
+  active mask, attempted/successful starts, and selected seed.
+
+The Feller condition is diagnostic rather than a hard existence constraint;
+optional regularization can penalize violations.
 
 This is not a time-discretized QE simulator. The old `HestonQECalibrator` name
-is only a deprecated compatibility alias. Each maturity is still calibrated
-independently, so these diagnostics do not turn the tenor collection into one
-globally coherent Heston process.
+is only a deprecated compatibility alias. Per-tenor fitting has more local
+flexibility and normally cannot have worse training fit; it may imply mutually
+inconsistent processes across expiry. Global fitting enforces one process and
+supports whole-tenor validation; it may fit real surfaces worse when Heston's
+time-homogeneous assumptions are inadequate. `compare_modes()` reports both
+sets of metrics on identical strike holdouts and their deltas and intentionally
+emits no automatic winner. Complete-tenor holdout diagnostics are run through
+the global detailed-calibration API because an independent per-tenor fit cannot
+train on a maturity whose quotes are all excluded.
+
+Reproduce the accuracy/runtime measurements with
+`python reports/benchmark_heston_pricing.py`; committed observations and the
+test environment are recorded in `reports/HESTON_PRICING_BENCHMARK.md`.
 
 ### SVI and SSVI
 

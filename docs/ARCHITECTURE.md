@@ -12,7 +12,7 @@ facade so the 2.0 import surface is not broken by the split.
 | Stochastic | `core.monte_carlo`, `core.lsmc`, `core.statistical_inference` | Terminal simulation, stopping policies, variance reduction, and uncertainty |
 | PDE | `core.finite_difference` | Anchored non-uniform Crank–Nicolson/Rannacher valuation, refinement diagnostics, and independent American PSOR/penalty exercise |
 | Orchestration | `core.pricing_engine`, `core.replay_pricing` | Model selection, compatibility checks, caching, and deterministic replay |
-| Calibration | `calib.sabr`, `calib.heston`, `calib.svi`, `calib.select` | Smile/surface fit, model selection, and static-arbitrage diagnostics |
+| Calibration | `calib.sabr`, `calib.heston`, `calib.heston_cos`, `calib.svi`, `calib.select` | Independent transform pricing, per-tenor/global fit, model selection, and static-arbitrage diagnostics |
 | Service | `api`, `security`, `observability` | HTTP schemas, identity, admission controls, telemetry, and replay endpoints |
 
 Shared stochastic helpers collapse antithetic paths into independent sampling
@@ -30,6 +30,10 @@ optimizer parameter vector.
   `/greeks`, and replay routes share the same model and security layer.
 - `HestonQECalibrator` remains a deprecated alias; pricing is characteristic-
   function Heston, not a QE time-stepping proxy.
+- `HestonCalibrator.calibrate()` retains the historical list of tenor results.
+  `calibrate_detailed()` adds aggregate global/per-tenor evidence, while
+  `compare_modes()` runs both architectures without declaring one universally
+  superior.
 
 ## State and scale
 
