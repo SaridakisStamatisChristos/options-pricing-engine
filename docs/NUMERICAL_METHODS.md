@@ -2,11 +2,17 @@
 
 ## Conventions
 
-The engine uses continuously compounded risk-free rate `r`, continuous dividend
-yield `q`, calendar time in years, and volatility in annualized decimal units.
+The numerical models use continuously compounded risk-free rate `r`, continuous
+dividend yield `q`, time in years, and volatility in annualized decimal units.
 Vanilla payoffs are denominated in the same currency units as spot and strike.
-The core models do not model discrete dividends, borrow constraints,
-transaction costs, exercise fees, settlement lags, or stochastic rates.
+The separate `options_engine.market` layer resolves typed dates, day counts,
+explicit holiday calendars, T+n settlement, funding/discount curves,
+continuous dividend/carry curves, and spot-settlement forwards into equivalent
+scalar `T`, `r`, and `q`. See [Market conventions](MARKET_CONVENTIONS.md).
+
+The core models do not themselves model discrete dividends, borrow constraints,
+transaction costs, exercise fees, or stochastic rates. Their Greeks retain
+scalar-input semantics; curve-node risk is outside this generic engine.
 
 ## European options
 

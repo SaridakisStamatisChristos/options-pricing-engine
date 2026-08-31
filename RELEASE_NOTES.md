@@ -1,5 +1,18 @@
 # Release notes
 
+## Unreleased — explicit market conventions
+
+- Added a typed market layer for civil valuation/expiry dates, five day-count
+  conventions, immutable user-supplied business calendars, business-day
+  adjustment, and T+n settlement.
+- Added continuously compounded zero curves, log-linear discount-factor
+  curves, parallel dividend/carry curves, explicit extrapolation policies, and
+  canonical curve/convention identifiers without external market-data
+  dependencies.
+- Added settlement-aware forward construction and endpoint-equivalent scalar
+  resolution. The numerical model classes and existing `OptionContract`,
+  `MarketData`, and `price_option()` APIs remain unchanged.
+
 ## 2.2.0 — numerical cross-validation and coherent Heston calibration
 
 This release adds independent numerical families for American PDE exercise and

@@ -37,6 +37,10 @@ os.environ.setdefault("OPE_ALLOWED_ORIGINS", "http://testserver")
 os.environ.setdefault("OPE_THREADS", "2")
 os.environ.setdefault("OPE_THREAD_QUEUE_MAX", "4")
 os.environ.setdefault("OPE_THREAD_QUEUE_TIMEOUT_SECONDS", "0.1")
+# Coverage tracing can push the high-resolution finite-difference API fixture
+# beyond the production default. This test verifies response semantics rather
+# than the service SLO; performance has a separate opt-in test family.
+os.environ.setdefault("OPE_THREAD_TASK_TIMEOUT_SECONDS", "60")
 
 
 def _make_token(*, scopes: list[str] | None = None, expires_in: int = 3600) -> str:

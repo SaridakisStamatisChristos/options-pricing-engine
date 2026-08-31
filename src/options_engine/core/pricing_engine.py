@@ -20,6 +20,7 @@ from typing import Any
 
 from numpy.random import SeedSequence
 
+from ..market.environment import DatedOptionContract, MarketEnvironment
 from ..observability.metrics import (
     MODEL_ERRORS,
     MODEL_LATENCY,
@@ -528,6 +529,36 @@ class OptionsEngine:
         except TimeoutError as exc:
             future.cancel()
             raise RuntimeError("Pricing task timed out") from exc
+
+    def price_dated_option(
+        self,
+        contract: DatedOptionContract,
+        market_environment: MarketEnvironment,
+        model_name: str = "black_scholes",
+        override_volatility: float | None = None,
+        seed: int | None = None,
+    ) -> dict[str, object]:
+        """Resolve market conventions, then dispatch through the scalar API.
+
+        Numerical models continue to receive only ``OptionContract`` and
+        ``MarketData``. The returned conventions payload records exactly how
+        dates, curves, settlement, discounting, and the forward were resolved.
+        """
+
+        if not isinstance(contract, DatedOptionContract):
+            raise TypeError("contract must be a DatedOptionContract")
+        if not isinstance(market_environment, MarketEnvironment):
+            raise TypeError("market_environment must be a MarketEnvironment")
+        resolved = market_environment.resolve(contract)
+        result = self.price_option(
+            resolved.contract,
+            resolved.market_data,
+            model_name=model_name,
+            override_volatility=override_volatility,
+            seed=seed,
+        )
+        result["market_conventions"] = resolved.diagnostics()
+        return result
 
     def price_portfolio(
         self,

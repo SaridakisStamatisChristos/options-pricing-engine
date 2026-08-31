@@ -7,7 +7,8 @@ facade so the 2.0 import surface is not broken by the split.
 
 | Layer | Main modules | Responsibility |
 | --- | --- | --- |
-| Domain | `core.models` | Contracts, markets, exercise style, and auditable results |
+| Scalar domain | `core.models` | Numerical contracts, endpoint market scalars, exercise style, and auditable results |
+| Market conventions | `market.dates`, `market.calendars`, `market.curves`, `market.forwards`, `market.environment` | Dated contracts, day counts, explicit holidays/settlement, curves, forwards, and scalar resolution |
 | Analytic and lattice | `core.black_scholes`, `core.crr` | Closed-form European pricing and adaptive binomial pricing |
 | Stochastic | `core.monte_carlo`, `core.lsmc`, `core.statistical_inference` | Terminal simulation, stopping policies, variance reduction, and uncertainty |
 | PDE | `core.finite_difference` | Anchored non-uniform Crank–Nicolson/Rannacher valuation, refinement diagnostics, and independent American PSOR/penalty exercise |
@@ -34,6 +35,10 @@ optimizer parameter vector.
   `calibrate_detailed()` adds aggregate global/per-tenor evidence, while
   `compare_modes()` runs both architectures without declaring one universally
   superior.
+- `OptionContract`, `MarketData`, and `OptionsEngine.price_option()` retain the
+  scalar-rate API. Dated callers use `DatedOptionContract`, `MarketEnvironment`,
+  and `price_dated_option()`; model implementations receive only resolved
+  scalar inputs.
 
 ## State and scale
 
