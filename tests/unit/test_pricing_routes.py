@@ -10,6 +10,7 @@ from fastapi import BackgroundTasks, HTTPException, status
 from options_engine.api.dependencies import get_engine
 from options_engine.api.routes import pricing, risk
 from options_engine.api.schemas.request import (
+    CashDividendRequest,
     ExerciseStyle,
     MarketDataRequest,
     OptionContractRequest,
@@ -17,6 +18,55 @@ from options_engine.api.schemas.request import (
     PricingModel,
     PricingRequest,
 )
+
+
+def _cash_dividend_request(model: PricingModel) -> PricingRequest:
+    return PricingRequest(
+        contracts=[
+            OptionContractRequest(
+                symbol="DIV",
+                strike_price=100.0,
+                time_to_expiry=1.0,
+                option_type=OptionType.CALL,
+            )
+        ],
+        market_data=MarketDataRequest(
+            spot_price=100.0,
+            risk_free_rate=0.03,
+            dividend_yield=0.01,
+            volatility=0.25,
+            cash_dividends=[CashDividendRequest(ex_time=0.5, amount=2.0)],
+        ),
+        model=model,
+    )
+
+
+def test_single_route_prices_explicit_cash_dividend_with_binomial() -> None:
+    response = asyncio.run(
+        pricing.single(
+            _cash_dividend_request(PricingModel.BINOMIAL),
+            BackgroundTasks(),
+            get_engine(),
+        )
+    )
+
+    assert len(response.results) == 1
+    assert response.results[0].theoretical_price > 0.0
+    assert "cash_dividend" in response.results[0].model_used
+
+
+def test_single_route_rejects_cash_dividend_for_black_scholes() -> None:
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            pricing.single(
+                _cash_dividend_request(PricingModel.BLACK_SCHOLES),
+                BackgroundTasks(),
+                get_engine(),
+            )
+        )
+
+    assert excinfo.value.status_code == status.HTTP_400_BAD_REQUEST
+    assert "does not support deterministic discrete cash dividends" in excinfo.value.detail
 
 
 def test_single_route_respects_calculate_greeks_flag() -> None:

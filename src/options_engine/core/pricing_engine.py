@@ -391,6 +391,7 @@ class OptionsEngine:
                 "spot_price": float(market_data.spot_price).hex(),
                 "risk_free_rate": float(market_data.risk_free_rate).hex(),
                 "dividend_yield": float(market_data.dividend_yield).hex(),
+                "cash_dividend_schedule_id": market_data.cash_dividends.schedule_id,
             },
             "model": model_name,
             "model_config": self._model_config(model),
@@ -690,6 +691,13 @@ class OptionsEngine:
             if volatility <= 1e-6:
                 raise ValueError("override_volatility must be greater than 1e-6")
         model = self.models[model_name]
+        if market_data.cash_dividends and not isinstance(
+            model, (BinomialModel, FiniteDifferenceModel)
+        ):
+            raise ValueError(
+                f"{model_name} does not support deterministic discrete cash dividends; "
+                "use binomial_200 or finite_difference_400"
+            )
         if isinstance(model, (BlackScholesModel, MonteCarloModel)):
             if contract.exercise_style.value != "european":
                 raise ValueError(f"{model_name} supports European exercise only")

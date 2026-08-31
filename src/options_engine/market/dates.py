@@ -42,6 +42,19 @@ class ExpiryDate:
         return self.value.isoformat()
 
 
+@dataclass(frozen=True, order=True, slots=True)
+class ExDividendDate:
+    """Civil ex-date for a deterministic cash-dividend entitlement event."""
+
+    value: date
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "value", _require_civil_date("ex_dividend_date", self.value))
+
+    def __str__(self) -> str:
+        return self.value.isoformat()
+
+
 def _is_last_day_of_february(value: date) -> bool:
     return value.month == 2 and value.day == _calendar.monthrange(value.year, 2)[1]
 
@@ -119,4 +132,4 @@ class DayCountConvention(StrEnum):
         raise AssertionError(f"Unhandled day-count convention: {self}")
 
 
-__all__ = ["DayCountConvention", "ExpiryDate", "ValuationDate"]
+__all__ = ["DayCountConvention", "ExDividendDate", "ExpiryDate", "ValuationDate"]

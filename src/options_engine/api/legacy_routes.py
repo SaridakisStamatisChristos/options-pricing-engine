@@ -18,6 +18,7 @@ from pydantic import ValidationError
 
 from ..core.black_scholes import BlackScholesModel
 from ..core.crr import BinomialModel
+from ..core.dividends import CashDividend, CashDividendSchedule
 from ..core.lsmc import american_lsmc_price
 from ..core.models import ExerciseStyle, MarketData, OptionContract, OptionType, PricingResult
 from ..core.monte_carlo import MonteCarloModel
@@ -146,6 +147,12 @@ def _build_market(request: QuoteRequest) -> MarketData:
         spot_price=market.spot_price,
         risk_free_rate=market.risk_free_rate,
         dividend_yield=market.dividend_yield,
+        cash_dividends=CashDividendSchedule(
+            tuple(
+                CashDividend(ex_time=dividend.ex_time, amount=dividend.amount)
+                for dividend in market.cash_dividends
+            )
+        ),
     )
 
 

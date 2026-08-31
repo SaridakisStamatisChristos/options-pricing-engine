@@ -14,7 +14,7 @@ from numpy.random import Generator, SeedSequence
 from scipy import stats
 from scipy.stats import norm, qmc
 
-from ..utils.validation import validate_pricing_parameters
+from ..utils.validation import reject_discrete_dividends, validate_pricing_parameters
 from .black_scholes import BlackScholesModel
 from .models import ExerciseStyle, MarketData, OptionContract, OptionType, PricingResult
 from .monte_carlo import MonteCarloModel
@@ -204,6 +204,7 @@ class VarianceReductionToolkit:
         """Auto-select the most efficient strategy meeting the target half-width."""
 
         validate_pricing_parameters(contract, market_data, volatility)
+        reject_discrete_dividends(market_data, "variance-reduction Monte Carlo")
         if contract.exercise_style is not ExerciseStyle.EUROPEAN:
             raise ValueError(
                 "Variance-reduction terminal simulation supports European exercise only"
@@ -279,6 +280,7 @@ class VarianceReductionToolkit:
             raise KeyError(f"Unknown strategy '{strategy_name}'")
 
         validate_pricing_parameters(contract, market_data, volatility)
+        reject_discrete_dividends(market_data, "variance-reduction Monte Carlo")
         if contract.exercise_style is not ExerciseStyle.EUROPEAN:
             raise ValueError(
                 "Variance-reduction terminal simulation supports European exercise only"

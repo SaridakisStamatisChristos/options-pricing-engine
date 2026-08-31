@@ -10,8 +10,13 @@ explicit holiday calendars, T+n settlement, funding/discount curves,
 continuous dividend/carry curves, and spot-settlement forwards into equivalent
 scalar `T`, `r`, and `q`. See [Market conventions](MARKET_CONVENTIONS.md).
 
-The core models do not themselves model discrete dividends, borrow constraints,
-transaction costs, exercise fees, or stochastic rates. Their Greeks retain
+CRR and finite differences support deterministic discrete cash dividends as
+explicit limited-liability spot jumps. Black–Scholes, terminal MC/QMC, and
+Longstaff–Schwartz reject such schedules rather than converting cash to a
+continuous yield. See [Discrete dividends](DISCRETE_DIVIDENDS.md) for the exact
+economic model, event ordering, limitations, and independent fixtures. The
+core models do not model borrow constraints, transaction costs, exercise fees,
+stochastic rates, or corporate-action uncertainty. Their Greeks retain
 scalar-input semantics; curve-node risk is outside this generic engine.
 
 ## European options
@@ -36,6 +41,13 @@ risk-neutral probability is outside `(0, 1)`, the implementation doubles the
 requested step count until a valid tree is obtained or raises an explicit
 error. It never clips an invalid probability into the interval. The resolved
 step count appears in `model_used`.
+
+With deterministic cash dividends, the tree applies
+`S(t_i+)=max(S(t_i-)-D_i,0)` by piecewise-linear interpolation of the
+post-event value function. Ex-times are snapped to the nearest tree layer and
+the alignment error is reported. Vega then uses a central volatility bump
+because differentiating interpolation weights analytically would not preserve
+the existing vega semantics.
 
 ### Finite-difference PDE
 
@@ -83,6 +95,13 @@ estimate is emitted. Otherwise only raw level prices and differences are
 reported. Richardson extrapolation is diagnostic and never silently replaces
 the published price.
 
+Cash ex-events are exact backward-time anchors. The solver applies the spot
+jump by interpolation, enforces American exercise on both sides, resets the
+cash-aware asymptotic boundary, and performs a fresh pair of Rannacher implicit
+half-steps after every event. Formal second-order Richardson diagnostics are
+disabled for cash-jump runs; observed-order diagnostics require three credible
+grids.
+
 The response retains the v2.1.0 grid, PSOR, bounds, and projection keys and adds
 mesh-spacing extrema, exact-anchor flags, every refinement level and price,
 per-level iteration/LCP residuals, observed order, error estimate, extrapolated
@@ -96,6 +115,12 @@ PSOR/penalty agreement, and committed QuantLib 1.43 cases covering deep ITM and
 OTM contracts, seven-day maturity, high volatility, continuous dividends, and
 negative rates. See `reports/PDE_CONVERGENCE.md` for the fixed convergence
 snapshot and reproduction commands.
+
+Cash-dividend regression evidence additionally uses committed QuantLib 1.43
+`Spot` dividend-model fixtures over European/American calls and puts, multiple
+events, deep ITM/OTM strikes, short maturity, high volatility, and negative
+rates. Both American PDE solvers and the separately implemented CRR event
+lattice are checked against those fixtures.
 
 ### Terminal Monte Carlo
 

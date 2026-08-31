@@ -1,5 +1,6 @@
 """Core utilities for the options pricing engine."""
 
+from .dividends import CashDividend, CashDividendSchedule
 from .finite_difference import (
     FiniteDifferenceAnalysis,
     FiniteDifferenceDiagnostics,
@@ -33,6 +34,8 @@ __all__ = [
     "ArbitrageCheckResult",
     "ArbitrageValidator",
     "BasisMetrics",
+    "CashDividend",
+    "CashDividendSchedule",
     "CleanBoardResult",
     "ExercisePolicyStep",
     "FiniteDifferenceAnalysis",

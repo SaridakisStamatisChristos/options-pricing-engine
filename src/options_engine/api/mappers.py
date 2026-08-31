@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ..core.dividends import CashDividend, CashDividendSchedule
 from ..core.models import (
     ExerciseStyle as DomainExerciseStyle,
 )
@@ -35,4 +36,10 @@ def to_market_data(request: PricingRequest) -> MarketData:
         spot_price=data.spot_price,
         risk_free_rate=data.risk_free_rate,
         dividend_yield=data.dividend_yield,
+        cash_dividends=CashDividendSchedule(
+            tuple(
+                CashDividend(ex_time=dividend.ex_time, amount=dividend.amount)
+                for dividend in data.cash_dividends
+            )
+        ),
     )

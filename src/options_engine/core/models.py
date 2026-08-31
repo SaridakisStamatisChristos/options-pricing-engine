@@ -12,6 +12,8 @@ from enum import StrEnum
 from numbers import Real
 from typing import TYPE_CHECKING
 
+from .dividends import EMPTY_CASH_DIVIDEND_SCHEDULE, CashDividendSchedule
+
 if TYPE_CHECKING:
     from .replay import ReplayCapsule
 
@@ -43,6 +45,7 @@ class MarketData:
     risk_free_rate: float
     dividend_yield: float = 0.0
     timestamp: datetime | None = None
+    cash_dividends: CashDividendSchedule = EMPTY_CASH_DIVIDEND_SCHEDULE
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -70,6 +73,8 @@ class MarketData:
             raise TypeError("timestamp must be a datetime")
         elif self.timestamp.tzinfo is None or self.timestamp.utcoffset() is None:
             raise ValueError("timestamp must be timezone-aware")
+        if not isinstance(self.cash_dividends, CashDividendSchedule):
+            raise TypeError("cash_dividends must be a CashDividendSchedule")
 
 
 @dataclass(frozen=True, slots=True)

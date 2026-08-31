@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, time
 from numbers import Real
 
+from ..core.dividends import CashDividend, CashDividendSchedule
 from ..core.models import (
     MAX_STRIKE_PRICE,
     ExerciseStyle,
@@ -27,6 +28,10 @@ from .calendars import (
 from .conventions import MarketConventions
 from .curves import CarryCurve, DiscountCurve, FlatDiscountCurve, FlatDividendCurve
 from .dates import DayCountConvention, ExpiryDate, ValuationDate
+from .dividends import (
+    EMPTY_DATED_CASH_DIVIDEND_SCHEDULE,
+    DatedCashDividendSchedule,
+)
 from .forwards import ForwardBuilder, ForwardResult
 
 
@@ -135,8 +140,30 @@ class ResolvedPricingInputs:
                 "market_id": self.market_id,
                 "rate_representation": "endpoint_equivalent_continuous",
                 "time_to_expiry": self.contract.time_to_expiry,
+                "cash_dividend_schedule_id": self.market_data.cash_dividends.schedule_id,
+                "cash_dividends": self.market_data.cash_dividends.to_list(),
             }
         )
+        if self.market_data.cash_dividends:
+            model_future_deduction = sum(
+                dividend.amount
+                * math.exp(
+                    (self.market_data.risk_free_rate - self.market_data.dividend_yield)
+                    * (self.contract.time_to_expiry - dividend.ex_time)
+                )
+                for dividend in self.market_data.cash_dividends.dividends
+            )
+            payload.update(
+                {
+                    "cash_dividend_curve_future_deduction": (
+                        self.forward.cash_dividend_future_value
+                    ),
+                    "cash_dividend_scalar_kernel_future_deduction": model_future_deduction,
+                    "cash_dividend_forward_deduction_mismatch": (
+                        model_future_deduction - self.forward.cash_dividend_future_value
+                    ),
+                }
+            )
         return payload
 
 
@@ -149,6 +176,7 @@ class MarketEnvironment:
     discount_curve: DiscountCurve
     carry_curve: CarryCurve
     timestamp: datetime | None = None
+    cash_dividends: DatedCashDividendSchedule = EMPTY_DATED_CASH_DIVIDEND_SCHEDULE
 
     def __post_init__(self) -> None:
         if not isinstance(self.conventions, MarketConventions):
@@ -158,8 +186,11 @@ class MarketEnvironment:
             discount_curve=self.discount_curve,
             carry_curve=self.carry_curve,
             conventions=self.conventions,
+            cash_dividends=self.cash_dividends,
         )
         object.__setattr__(self, "spot_price", builder.spot_price)
+        if not isinstance(self.cash_dividends, DatedCashDividendSchedule):
+            raise TypeError("cash_dividends must be a DatedCashDividendSchedule")
 
         timestamp = self.timestamp
         if timestamp is None:
@@ -186,6 +217,7 @@ class MarketEnvironment:
             "discount_curve_id": self.discount_curve.curve_id,
             "spot_price": self.spot_price.hex(),
             "timestamp": self.timestamp.isoformat(),
+            "cash_dividend_schedule_id": self.cash_dividends.schedule_id,
         }
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -204,6 +236,7 @@ class MarketEnvironment:
         settlement_convention: BusinessDayConvention = BusinessDayConvention.FOLLOWING,
         expiry_convention: BusinessDayConvention = BusinessDayConvention.UNADJUSTED,
         timestamp: datetime | None = None,
+        cash_dividends: DatedCashDividendSchedule = EMPTY_DATED_CASH_DIVIDEND_SCHEDULE,
     ) -> MarketEnvironment:
         """Build a dated environment from the established scalar-rate inputs."""
 
@@ -229,6 +262,7 @@ class MarketEnvironment:
                 day_count=day_count,
             ),
             timestamp=timestamp,
+            cash_dividends=cash_dividends,
         )
 
     def resolve(self, contract: DatedOptionContract) -> ResolvedPricingInputs:
@@ -246,6 +280,7 @@ class MarketEnvironment:
             discount_curve=self.discount_curve,
             carry_curve=self.carry_curve,
             conventions=self.conventions,
+            cash_dividends=self.cash_dividends,
         ).build(contract.expiry_date)
         time_to_expiry = self.conventions.day_count.year_fraction(
             self.conventions.valuation_date.value,
@@ -255,15 +290,32 @@ class MarketEnvironment:
             raise ValueError("day-count year fraction to adjusted expiry must be positive")
 
         risk_free_rate = -math.log(forward.discount_factor) / time_to_expiry
-        forward_growth = math.log(forward.forward_price / self.spot_price) / time_to_expiry
+        continuous_forward = forward.continuous_carry_forward_price
+        if continuous_forward is None:  # pragma: no cover - builder always supplies it
+            continuous_forward = forward.forward_price
+        forward_growth = math.log(continuous_forward / self.spot_price) / time_to_expiry
         dividend_yield = risk_free_rate - forward_growth
         if self.timestamp is None:  # pragma: no cover - normalized in __post_init__
             raise AssertionError("timestamp was not normalized")
+        scalar_dividends = CashDividendSchedule(
+            tuple(
+                CashDividend(
+                    ex_time=self.conventions.day_count.year_fraction(
+                        self.conventions.valuation_date.value,
+                        dividend.ex_date.value,
+                    ),
+                    amount=dividend.amount,
+                )
+                for dividend in self.cash_dividends.dividends
+                if dividend.ex_date.value < forward.expiry_date
+            )
+        )
         market_data = MarketData(
             spot_price=self.spot_price,
             risk_free_rate=risk_free_rate,
             dividend_yield=dividend_yield,
             timestamp=self.timestamp,
+            cash_dividends=scalar_dividends,
         )
         scalar_contract = contract.resolve(time_to_expiry)
         return ResolvedPricingInputs(

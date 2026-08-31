@@ -21,7 +21,7 @@ from ..utils.numerics import (
     numerics_policy_hash,
     stable_regression,
 )
-from ..utils.validation import validate_pricing_parameters
+from ..utils.validation import reject_discrete_dividends, validate_pricing_parameters
 from .black_scholes import BlackScholesModel, black_scholes_price
 from .crr import BinomialModel
 from .models import ExerciseStyle, MarketData, OptionContract, OptionType, PricingResult
@@ -782,6 +782,7 @@ class LongstaffSchwartzModel:
             raise ValueError("Longstaff-Schwartz model requires an American option contract")
 
         validate_pricing_parameters(contract, market_data, volatility)
+        reject_discrete_dividends(market_data, "Longstaff-Schwartz")
 
         start = time.perf_counter()
 

@@ -1,0 +1,166 @@
+{
+  "schema_version": 1,
+  "source": {
+    "library": "QuantLib",
+    "version": "1.43",
+    "engine": "FdBlackScholesVanillaEngine",
+    "cash_dividend_model": "Spot",
+    "time_grid": 2400,
+    "space_grid": 1200,
+    "damping_steps": 4,
+    "day_count": "Actual/365 Fixed",
+    "valuation_date": "2026-01-01",
+    "generator": "reports/generate_quantlib_references.py"
+  },
+  "cases": [
+    {
+      "id": "euro_atm_call_two_cash_events",
+      "style": "european",
+      "type": "call",
+      "spot": 100.0,
+      "strike": 100.0,
+      "time_to_expiry": 1.0,
+      "r": 0.03,
+      "q": 0.01,
+      "vol": 0.25,
+      "dividends": [
+        {
+          "ex_time": 0.2493150684931507,
+          "amount": 1.5
+        },
+        {
+          "ex_time": 0.7506849315068493,
+          "amount": 1.5
+        }
+      ],
+      "regimes": [
+        "multiple_dividends",
+        "continuous_and_cash_dividends"
+      ],
+      "reference_price": 9.26934532216678
+    },
+    {
+      "id": "euro_deep_itm_put_negative_rate",
+      "style": "european",
+      "type": "put",
+      "spot": 60.0,
+      "strike": 100.0,
+      "time_to_expiry": 1.0,
+      "r": -0.02,
+      "q": 0.01,
+      "vol": 0.35,
+      "dividends": [
+        {
+          "ex_time": 0.2,
+          "amount": 1.0
+        },
+        {
+          "ex_time": 0.6493150684931507,
+          "amount": 2.0
+        }
+      ],
+      "regimes": [
+        "deep_itm",
+        "negative_rates",
+        "multiple_dividends"
+      ],
+      "reference_price": 46.17800991630166
+    },
+    {
+      "id": "euro_deep_otm_short_high_vol_call",
+      "style": "european",
+      "type": "call",
+      "spot": 70.0,
+      "strike": 120.0,
+      "time_to_expiry": 0.1506849315068493,
+      "r": 0.04,
+      "q": 0.0,
+      "vol": 0.65,
+      "dividends": [
+        {
+          "ex_time": 0.049315068493150684,
+          "amount": 0.75
+        }
+      ],
+      "regimes": [
+        "deep_otm",
+        "short_maturity",
+        "high_volatility"
+      ],
+      "reference_price": 0.12942598893256463
+    },
+    {
+      "id": "american_call_large_cash_event",
+      "style": "american",
+      "type": "call",
+      "spot": 110.0,
+      "strike": 100.0,
+      "time_to_expiry": 0.5013698630136987,
+      "r": 0.03,
+      "q": 0.0,
+      "vol": 0.2,
+      "dividends": [
+        {
+          "ex_time": 0.2493150684931507,
+          "amount": 5.0
+        }
+      ],
+      "regimes": [
+        "american_call",
+        "large_dividend",
+        "pre_exercise"
+      ],
+      "reference_price": 11.835272442435059
+    },
+    {
+      "id": "american_deep_itm_put_negative_rate",
+      "style": "american",
+      "type": "put",
+      "spot": 60.0,
+      "strike": 100.0,
+      "time_to_expiry": 0.7506849315068493,
+      "r": -0.015,
+      "q": 0.02,
+      "vol": 0.3,
+      "dividends": [
+        {
+          "ex_time": 0.29863013698630136,
+          "amount": 2.0
+        }
+      ],
+      "regimes": [
+        "american_put",
+        "deep_itm",
+        "negative_rates"
+      ],
+      "reference_price": 44.122878060565974
+    },
+    {
+      "id": "american_put_high_vol_multiple_events",
+      "style": "american",
+      "type": "put",
+      "spot": 100.0,
+      "strike": 110.0,
+      "time_to_expiry": 2.0,
+      "r": 0.05,
+      "q": 0.015,
+      "vol": 0.8,
+      "dividends": [
+        {
+          "ex_time": 0.4,
+          "amount": 3.0
+        },
+        {
+          "ex_time": 1.2,
+          "amount": 3.0
+        }
+      ],
+      "regimes": [
+        "american_put",
+        "high_volatility",
+        "multiple_dividends"
+      ],
+      "reference_price": 47.59693513593661
+    }
+  ]
+}

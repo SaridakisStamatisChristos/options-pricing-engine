@@ -27,7 +27,7 @@ from ..greeks.estimators import (
     theta_likelihood_ratio,
 )
 from ..greeks.stability import contributions_finite, is_estimate_unstable
-from ..utils.validation import validate_pricing_parameters
+from ..utils.validation import reject_discrete_dividends, validate_pricing_parameters
 from .black_scholes import _black_scholes_greeks
 from .models import ExerciseStyle, MarketData, OptionContract, OptionType, PricingResult
 from .pricing_common import (
@@ -87,6 +87,7 @@ class MonteCarloModel:
             if contract.exercise_style is not ExerciseStyle.EUROPEAN:
                 raise ValueError("Terminal-payoff Monte Carlo supports European exercise only")
             validate_pricing_parameters(contract, market_data, volatility)
+            reject_discrete_dividends(market_data, "terminal-payoff Monte Carlo")
 
             # At least two independent units are required to estimate sampling
             # variance. The constructor retains the historical ``paths=1``

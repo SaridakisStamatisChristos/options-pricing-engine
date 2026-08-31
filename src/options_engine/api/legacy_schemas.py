@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 import math
+from itertools import pairwise
 from numbers import Real
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 
 class APIModel(BaseModel):
@@ -45,10 +53,26 @@ class ContractPayload(APIModel):
         return normalised
 
 
+class CashDividendPayload(APIModel):
+    ex_time: float = Field(gt=0.0, le=100.0)
+    amount: float = Field(gt=0.0, le=1e12)
+
+
 class MarketPayload(APIModel):
     spot_price: float = Field(gt=0, le=1e12)
     risk_free_rate: float
     dividend_yield: float = 0.0
+    cash_dividends: list[CashDividendPayload] = Field(default_factory=list, max_length=64)
+
+    @field_validator("cash_dividends")
+    @classmethod
+    def _validate_cash_dividend_order(
+        cls, values: list[CashDividendPayload]
+    ) -> list[CashDividendPayload]:
+        times = [value.ex_time for value in values]
+        if any(right <= left for left, right in pairwise(times)):
+            raise ValueError("cash-dividend ex-times must be strictly increasing and unique")
+        return values
 
     @field_validator("risk_free_rate", "dividend_yield", mode="before")
     @classmethod
@@ -172,6 +196,15 @@ class QuoteRequest(APIModel):
         pattern=r"^[A-Za-z0-9._:-]+$",
     )
     surface: SurfaceHandle | None = None
+
+    @model_validator(mode="after")
+    def _validate_cash_dividends_before_expiry(self) -> QuoteRequest:
+        if (
+            self.market.cash_dividends
+            and self.market.cash_dividends[-1].ex_time >= self.contract.time_to_expiry
+        ):
+            raise ValueError("cash-dividend ex-times must be strictly before option expiry")
+        return self
 
     @field_validator("surface", mode="before")
     @classmethod

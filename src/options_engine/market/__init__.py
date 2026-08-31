@@ -22,7 +22,8 @@ from .curves import (
     FlatDividendCurve,
     ZeroRateNode,
 )
-from .dates import DayCountConvention, ExpiryDate, ValuationDate
+from .dates import DayCountConvention, ExDividendDate, ExpiryDate, ValuationDate
+from .dividends import DatedCashDividend, DatedCashDividendSchedule
 from .environment import DatedOptionContract, MarketEnvironment, ResolvedPricingInputs
 from .forwards import ForwardBuilder, ForwardResult
 
@@ -35,12 +36,15 @@ __all__ = [
     "CarryCurve",
     "ContinuousDividendCurve",
     "ContinuousZeroCurve",
+    "DatedCashDividend",
+    "DatedCashDividendSchedule",
     "DatedOptionContract",
     "DayCountConvention",
     "DiscountCurve",
     "DiscountFactorCurve",
     "DiscountFactorNode",
     "DividendFactorCurve",
+    "ExDividendDate",
     "ExpiryDate",
     "ExtrapolationMethod",
     "FlatDiscountCurve",

@@ -1,7 +1,8 @@
 # Market conventions and curve resolution
 
 The numerical pricing classes intentionally accept the compact scalar state
-`(time_to_expiry, risk_free_rate, dividend_yield)`. The
+`(time_to_expiry, risk_free_rate, dividend_yield)` plus an optional immutable
+cash-dividend schedule on the same clock. The
 `options_engine.market` layer owns the dated market representation and resolves
 it before numerical dispatch. This keeps calendars and curve interpolation out
 of Black–Scholes, CRR, Monte Carlo, Longstaff–Schwartz, and finite differences
@@ -51,8 +52,9 @@ strictly positive discount factors, including the synthetic reference node
 `D(t,t)=1`. `FlatDiscountCurve` provides the scalar-rate special case.
 
 `ContinuousDividendCurve`, `DividendFactorCurve`, and `FlatDividendCurve`
-provide the corresponding continuous dividend/carry factors. Discrete cash
-dividends are not converted implicitly into a continuous yield.
+provide the corresponding continuous dividend/carry factors. Typed dated cash
+dividends are resolved separately and are never converted implicitly into a
+continuous yield.
 
 Extrapolation beyond the last node is never accidental. Each interpolated
 curve selects one of:
@@ -71,10 +73,10 @@ floating-point values.
 
 Let `t` be valuation, `t_s` spot settlement, and `T` adjusted expiry. Funding
 and carry factors between arbitrary dates are ratios of their reference-date
-curves. The forward builder uses
+curves. Without fixed cash events, the forward builder uses
 
 \[
-F(t_s,T)=S_t\frac{Q(t_s,T)}{D(t_s,T)}.
+F_c(t_s,T)=S_t\frac{Q(t_s,T)}{D(t_s,T)}.
 \]
 
 The option present value still uses the valuation-to-expiry funding factor
@@ -82,15 +84,32 @@ The option present value still uses the valuation-to-expiry funding factor
 
 \[
 r_{eq}=-\frac{\log D(t,T)}{\tau},\qquad
-q_{eq}=r_{eq}-\frac{\log(F(t_s,T)/S_t)}{\tau}.
+q_{eq}=r_{eq}-\frac{\log(F_c(t_s,T)/S_t)}{\tau}.
 \]
 
 Consequently, the unchanged scalar kernels reproduce both endpoints:
 
 \[
 e^{-r_{eq}\tau}=D(t,T),\qquad
-S_t e^{(r_{eq}-q_{eq})\tau}=F(t_s,T).
+S_t e^{(r_{eq}-q_{eq})\tau}=F_c(t_s,T).
 \]
+
+For fixed cash amounts `D_i` after spot settlement and before expiry, the
+forward report additionally provides the conventional curve deduction
+
+\[
+A(T)=\sum_i D_i\frac{Q(t_i,T)}{D(t_i,T)},\qquad
+F_{cash}(t_s,T)=F_c(t_s,T)-A(T).
+\]
+
+The equivalent `q_eq` is still derived from `F_c`, not `F_cash`; the cash
+events are then supplied explicitly to CRR/PDE. This avoids double counting.
+For non-flat curves, one endpoint-equivalent `(r_eq,q_eq)` cannot reproduce
+every event-to-expiry accrual. Resolution diagnostics therefore report the
+curve deduction, scalar-kernel deduction, and their mismatch. The numerical
+spot-jump model also floors the equity at zero, so `F_cash` is a transparent
+curve-bookkeeping forward rather than a volatility-dependent claim that
+overrides the documented limited-liability process.
 
 `MarketEnvironment.resolve()` returns the scalar `OptionContract` and
 `MarketData` plus the original and adjusted dates, settlement date, all four
@@ -98,8 +117,9 @@ funding/carry factors, forward, curve IDs, conventions ID, and equivalent
 rates. `OptionsEngine.price_dated_option()` attaches the same evidence under
 `market_conventions`.
 
-The original `OptionContract`, `MarketData`, and `OptionsEngine.price_option()`
-interfaces remain unchanged. `MarketEnvironment.from_scalar_rates()` is also
+The original scalar rate fields and `OptionsEngine.price_option()` call shape
+remain backward compatible; `MarketData` adds an optional empty-by-default
+schedule. `MarketEnvironment.from_scalar_rates()` is also
 available when callers want explicit dates while retaining flat `r` and `q`.
 
 ## Example
@@ -149,7 +169,8 @@ with OptionsEngine(num_threads=1) as engine:
 ## Boundaries
 
 This layer does not bootstrap curves, source market data, invent holiday
-calendars, model discrete cash dividends, or calculate bucketed curve risk.
+calendars, infer ex-dates/entitlement, model uncertain dividends, or calculate
+bucketed curve risk.
 Model Greeks retain their established scalar-input meaning; in particular,
 rho is sensitivity to the endpoint-equivalent rate rather than a key-rate
 DV01. Those responsibilities require product- and desk-specific policies above

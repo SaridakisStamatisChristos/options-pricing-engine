@@ -52,6 +52,49 @@ def _vanilla_price(case: dict[str, Any]) -> float:
     return float(option.NPV())
 
 
+def _discrete_dividend_price(case: dict[str, Any]) -> float:
+    """Price the documented limited-liability spot-jump cash-dividend model."""
+
+    expiry = _expiry(case["time_to_expiry"])
+    spot = ql.QuoteHandle(ql.SimpleQuote(case["spot"]))
+    risk_free = ql.YieldTermStructureHandle(
+        ql.FlatForward(VALUATION_DATE, case["r"], DAY_COUNT, ql.Continuous)
+    )
+    dividend = ql.YieldTermStructureHandle(
+        ql.FlatForward(VALUATION_DATE, case["q"], DAY_COUNT, ql.Continuous)
+    )
+    volatility = ql.BlackVolTermStructureHandle(
+        ql.BlackConstantVol(VALUATION_DATE, CALENDAR, case["vol"], DAY_COUNT)
+    )
+    process = ql.BlackScholesMertonProcess(spot, dividend, risk_free, volatility)
+    dividends = ql.DividendVector(
+        [_expiry(item["ex_time"]) for item in case["dividends"]],
+        [item["amount"] for item in case["dividends"]],
+    )
+    option_kind = ql.Option.Call if case["type"] == "call" else ql.Option.Put
+    payoff = ql.PlainVanillaPayoff(option_kind, case["strike"])
+    exercise = (
+        ql.AmericanExercise(VALUATION_DATE, expiry)
+        if case["style"] == "american"
+        else ql.EuropeanExercise(expiry)
+    )
+    option = ql.VanillaOption(payoff, exercise)
+    option.setPricingEngine(
+        ql.FdBlackScholesVanillaEngine(
+            process,
+            dividends,
+            2_400,
+            1_200,
+            4,
+            ql.FdmSchemeDesc.CrankNicolson(),
+            False,
+            ql.nullDouble(),
+            ql.FdBlackScholesVanillaEngine.Spot,
+        )
+    )
+    return float(option.NPV())
+
+
 def _heston_price(case: dict[str, Any]) -> float:
     expiry = _expiry(case["time_to_expiry"])
     zero_curve = ql.YieldTermStructureHandle(ql.FlatForward(VALUATION_DATE, 0.0, DAY_COUNT))
@@ -86,6 +129,7 @@ def _regenerate(filename: str, pricing_function) -> None:
 def main() -> None:
     ql.Settings.instance().evaluationDate = VALUATION_DATE
     _regenerate("quantlib_vanilla_v1.json", _vanilla_price)
+    _regenerate("quantlib_discrete_dividends_v1.json", _discrete_dividend_price)
     _regenerate("quantlib_heston_v1.json", _heston_price)
 
 

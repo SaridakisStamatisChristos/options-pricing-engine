@@ -37,3 +37,22 @@ def validate_pricing_parameters(
 
     if contract.strike_price <= 0:
         raise ValueError("strike_price must be strictly positive")
+
+
+def validate_discrete_dividends(
+    contract: OptionContract,
+    market_data: MarketData,
+) -> None:
+    """Validate event times against the contract's scalar maturity clock."""
+
+    market_data.cash_dividends.validate_for_maturity(contract.time_to_expiry)
+
+
+def reject_discrete_dividends(market_data: MarketData, model_name: str) -> None:
+    """Fail explicitly when a model has no exact cash-jump implementation."""
+
+    if market_data.cash_dividends:
+        raise ValueError(
+            f"{model_name} does not support deterministic discrete cash dividends; "
+            "use BinomialModel or FiniteDifferenceModel"
+        )

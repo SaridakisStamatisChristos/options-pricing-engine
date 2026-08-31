@@ -10,6 +10,7 @@ import numpy as np
 from scipy.stats import t as student_t
 
 from options_engine.core.models import MarketData, OptionContract, OptionType
+from options_engine.utils.validation import reject_discrete_dividends
 
 from .stability import (
     SIGMA_FLOOR,
@@ -73,6 +74,7 @@ def pathwise_delta(
 ) -> np.ndarray:
     """Return per-path delta contributions using the pathwise method."""
 
+    reject_discrete_dividends(market_data, "terminal-lognormal Greek estimators")
     indicator = _indicator(contract, terminal_prices)
     spot = safe_spot(market_data.spot_price)
     contributions = discount_factor * np.where(indicator, terminal_prices / spot, 0.0)
@@ -124,6 +126,7 @@ def pathwise_vega(
 ) -> np.ndarray:
     """Return per-path vega contributions using the pathwise method."""
 
+    reject_discrete_dividends(market_data, "terminal-lognormal Greek estimators")
     indicator = _indicator(contract, terminal_prices)
     tau = clamp_tau(time_to_expiry)
     sigma = clamp_sigma(volatility)
@@ -147,6 +150,7 @@ def theta_likelihood_ratio(
 ) -> np.ndarray:
     """Return per-path theta contributions using the LR/score-function method."""
 
+    reject_discrete_dividends(market_data, "terminal-lognormal Greek estimators")
     tau = clamp_tau(time_to_expiry)
     sigma = clamp_sigma(volatility)
     sigma_sq = sigma**2
@@ -176,6 +180,7 @@ def rho_likelihood_ratio(
 ) -> np.ndarray:
     """Return per-path rho contributions using the LR/score-function method."""
 
+    reject_discrete_dividends(market_data, "terminal-lognormal Greek estimators")
     tau = clamp_tau(time_to_expiry)
     sigma = clamp_sigma(volatility)
     sigma_sq = sigma**2
@@ -211,6 +216,7 @@ def simulate_terminal_prices(
         raise ValueError("simulation scalar inputs must be finite")
     if not isinstance(market_data, MarketData):
         raise TypeError("market_data must be MarketData")
+    reject_discrete_dividends(market_data, "terminal-lognormal simulation")
     if not 0.0 < spot <= 1e12:
         raise ValueError("spot must be within (0, 1e12]")
     if not 0.0 <= volatility <= 5.0:
@@ -485,6 +491,7 @@ def ensure_fd_inputs(
         raise TypeError("contract must be OptionContract")
     if not isinstance(market_data, MarketData):
         raise TypeError("market_data must be MarketData")
+    reject_discrete_dividends(market_data, "terminal-lognormal Greek estimators")
     if isinstance(volatility, bool) or not isinstance(volatility, Real):
         raise TypeError("volatility must be a real number")
     if isinstance(time_to_expiry, bool) or not isinstance(time_to_expiry, Real):

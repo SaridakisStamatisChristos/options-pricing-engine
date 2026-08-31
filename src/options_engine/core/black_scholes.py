@@ -7,7 +7,7 @@ import math
 import time
 from dataclasses import dataclass
 
-from ..utils.validation import validate_pricing_parameters
+from ..utils.validation import reject_discrete_dividends, validate_pricing_parameters
 from .models import ExerciseStyle, MarketData, OptionContract, OptionType, PricingResult
 from .pricing_common import (
     INV_SQRT_TWO_PI,
@@ -170,6 +170,7 @@ class BlackScholesModel:
             if contract.exercise_style is not ExerciseStyle.EUROPEAN:
                 raise ValueError("Black-Scholes supports European exercise only")
             validate_pricing_parameters(contract, market_data, volatility)
+            reject_discrete_dividends(market_data, "Black-Scholes")
             price, delta, gamma, theta, vega, rho = _black_scholes_greeks(
                 contract, market_data, volatility
             )

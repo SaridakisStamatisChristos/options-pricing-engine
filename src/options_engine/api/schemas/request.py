@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import re
 from enum import StrEnum
+from itertools import pairwise
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class OptionType(StrEnum):
@@ -67,11 +68,29 @@ class OptionContractRequest(APIRequestModel):
         raise TypeError("exercise_style must be a string")
 
 
+class CashDividendRequest(APIRequestModel):
+    """One deterministic cash dividend on the scalar model clock."""
+
+    ex_time: float = Field(..., gt=0.0, le=100.0)
+    amount: float = Field(..., gt=0.0, le=1e12)
+
+
 class MarketDataRequest(APIRequestModel):
     spot_price: float = Field(..., gt=0, le=1e12)
     risk_free_rate: float = Field(..., ge=-1.0, le=1.0)
     dividend_yield: float = Field(0.0, ge=-1.0, le=1.0)
     volatility: float | None = Field(None, gt=1e-6, le=5.0)
+    cash_dividends: list[CashDividendRequest] = Field(default_factory=list, max_length=64)
+
+    @field_validator("cash_dividends")
+    @classmethod
+    def validate_cash_dividend_order(
+        cls, values: list[CashDividendRequest]
+    ) -> list[CashDividendRequest]:
+        times = [value.ex_time for value in values]
+        if any(right <= left for left, right in pairwise(times)):
+            raise ValueError("cash-dividend ex-times must be strictly increasing and unique")
+        return values
 
 
 class PricingRequest(APIRequestModel):
@@ -80,6 +99,16 @@ class PricingRequest(APIRequestModel):
     model: PricingModel = PricingModel.BLACK_SCHOLES
     calculate_greeks: bool = True
     seed: int | None = Field(default=None, ge=0, le=2**128 - 1)
+
+    @model_validator(mode="after")
+    def validate_cash_dividends_before_every_expiry(self) -> PricingRequest:
+        if self.contracts and self.market_data.cash_dividends:
+            shortest_maturity = min(contract.time_to_expiry for contract in self.contracts)
+            if self.market_data.cash_dividends[-1].ex_time >= shortest_maturity:
+                raise ValueError(
+                    "cash-dividend ex-times must be strictly before every option expiry"
+                )
+        return self
 
     @field_validator("model", mode="before")
     @classmethod
