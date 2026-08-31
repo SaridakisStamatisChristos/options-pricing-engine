@@ -12,6 +12,8 @@
 - Added settlement-aware forward construction and endpoint-equivalent scalar
   resolution. The numerical model classes and existing `OptionContract`,
   `MarketData`, and `price_option()` APIs remain unchanged.
+- Made release publication an explicit manual CI dispatch after the complete
+  exact-commit gate chain; ordinary pushes cannot create tags or releases.
 
 ## 2.2.0 — numerical cross-validation and coherent Heston calibration
 

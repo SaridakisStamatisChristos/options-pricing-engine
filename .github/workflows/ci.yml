@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish the checked commit after every required gate succeeds
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -182,7 +188,10 @@ jobs:
 
   release:
     name: Release after all required gates
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.publish_release == true &&
+      github.ref == 'refs/heads/main'
     needs: [tests, minimum-versions, quality, container, codeql]
     uses: ./.github/workflows/release.yml
     with:

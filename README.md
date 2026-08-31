@@ -237,7 +237,9 @@ also runs minimum-dependency tests, dependency auditing, CodeQL, distribution
 inspection, and a Trivy container scan. GitHub Releases are downstream of all
 of those gates for the same source commit: CI builds each wheel and source
 distribution once, retains `SHA256SUMS`, and publishes GitHub artifact
-attestations before creating an exact-commit tag and release.
+attestations before creating an exact-commit tag and release. Publication is
+an explicit `workflow_dispatch` choice (`publish_release=true`); ordinary
+pushes and pull requests can never enter the publication job.
 
 After downloading a release's three assets, verify both integrity and
 GitHub-hosted provenance:

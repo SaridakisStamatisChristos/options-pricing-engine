@@ -98,8 +98,7 @@ jobs:
           SOURCE_SHA: ${{ inputs.source_sha }}
         shell: bash
         run: |
-          tag_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" 2>/dev/null || true)"
-          if [[ -n "${tag_ref}" ]]; then
+          if tag_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" 2>/dev/null)"; then
             object_type="$(jq -r '.object.type' <<<"${tag_ref}")"
             object_sha="$(jq -r '.object.sha' <<<"${tag_ref}")"
             if [[ "${object_type}" == "tag" ]]; then

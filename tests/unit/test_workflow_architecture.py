@@ -74,6 +74,7 @@ def test_release_is_callable_only_and_contains_no_duplicate_quality_suite() -> N
 def test_release_waits_for_every_required_gate() -> None:
     ci = _load("ci.yml")
     release = ci["jobs"]["release"]
+    release_input = ci["on"]["workflow_dispatch"]["inputs"]["publish_release"]
 
     assert set(release["needs"]) == {
         "tests",
@@ -83,8 +84,16 @@ def test_release_waits_for_every_required_gate() -> None:
         "codeql",
     }
     assert release["uses"] == "./.github/workflows/release.yml"
-    assert "github.event_name == 'push'" in release["if"]
+    assert release_input == {
+        "description": "Publish the checked commit after every required gate succeeds",
+        "required": "true",
+        "type": "boolean",
+        "default": "false",
+    }
+    assert "github.event_name == 'workflow_dispatch'" in release["if"]
+    assert "inputs.publish_release == true" in release["if"]
     assert "github.ref == 'refs/heads/main'" in release["if"]
+    assert "github.event_name == 'push'" not in release["if"]
     assert release["with"] == {
         "source_sha": "${{ github.sha }}",
         "artifact_name": "distributions-${{ github.sha }}",
@@ -140,6 +149,8 @@ def test_release_reuses_tested_artifacts_and_attests_distributions() -> None:
     assert '"${SOURCE_SHA}" != "${GITHUB_SHA}"' in commands
     assert "sha256sum --check SHA256SUMS" in commands
     assert "tag_commit" in commands
+    assert 'if tag_ref="$(gh api ' in commands
+    assert "|| true" not in commands
     assert '--target "${SOURCE_SHA}"' in commands
 
 
