@@ -1,0 +1,286 @@
+{
+  "source": {
+    "library": "QuantLib",
+    "version": "1.43",
+    "engine": "FdBlackScholesVanillaEngine",
+    "scheme": "CrankNicolson",
+    "time_steps": 2400,
+    "space_steps": 1200,
+    "damping_steps": 4,
+    "cash_dividend_model": "Spot",
+    "curve_interpolation": "linear_continuous_zero",
+    "generator": "reports/generate_quantlib_references.py"
+  },
+  "valuation_date": "2026-01-01",
+  "day_count": "Actual365Fixed",
+  "cases": [
+    {
+      "id": "upward-funding-atm-american-put",
+      "spot": 100.0,
+      "strike": 100.0,
+      "expiry_date": "2027-01-01",
+      "type": "put",
+      "style": "american",
+      "vol": 0.22,
+      "funding_nodes": [
+        {
+          "date": "2026-07-02",
+          "rate": 0.01
+        },
+        {
+          "date": "2027-01-01",
+          "rate": 0.04
+        }
+      ],
+      "carry_nodes": [
+        {
+          "date": "2026-07-02",
+          "rate": 0.01
+        },
+        {
+          "date": "2027-01-01",
+          "rate": 0.01
+        }
+      ],
+      "dividends": [],
+      "regimes": [
+        "american_put",
+        "upward_funding"
+      ],
+      "reference_price": 7.950906604258442
+    },
+    {
+      "id": "downward-funding-deep-itm-long-put",
+      "spot": 72.0,
+      "strike": 100.0,
+      "expiry_date": "2028-01-01",
+      "type": "put",
+      "style": "american",
+      "vol": 0.35,
+      "funding_nodes": [
+        {
+          "date": "2026-07-01",
+          "rate": 0.075
+        },
+        {
+          "date": "2027-01-01",
+          "rate": 0.055
+        },
+        {
+          "date": "2028-01-01",
+          "rate": 0.025
+        }
+      ],
+      "carry_nodes": [
+        {
+          "date": "2026-07-01",
+          "rate": 0.005
+        },
+        {
+          "date": "2027-01-01",
+          "rate": 0.012
+        },
+        {
+          "date": "2028-01-01",
+          "rate": 0.02
+        }
+      ],
+      "dividends": [],
+      "regimes": [
+        "american_put",
+        "deep_itm",
+        "downward_funding",
+        "long_maturity"
+      ],
+      "reference_price": 32.17561288623904
+    },
+    {
+      "id": "negative-front-end-short-put",
+      "spot": 105.0,
+      "strike": 100.0,
+      "expiry_date": "2026-04-01",
+      "type": "put",
+      "style": "american",
+      "vol": 0.55,
+      "funding_nodes": [
+        {
+          "date": "2026-02-01",
+          "rate": -0.03
+        },
+        {
+          "date": "2026-03-01",
+          "rate": -0.01
+        },
+        {
+          "date": "2026-04-01",
+          "rate": 0.005
+        }
+      ],
+      "carry_nodes": [
+        {
+          "date": "2026-02-01",
+          "rate": 0.012
+        },
+        {
+          "date": "2026-03-01",
+          "rate": 0.006
+        },
+        {
+          "date": "2026-04-01",
+          "rate": 0.0
+        }
+      ],
+      "dividends": [],
+      "regimes": [
+        "american_put",
+        "negative_rates",
+        "short_maturity"
+      ],
+      "reference_price": 8.816994571574904
+    },
+    {
+      "id": "nonflat-carry-american-call",
+      "spot": 112.0,
+      "strike": 100.0,
+      "expiry_date": "2027-07-01",
+      "type": "call",
+      "style": "american",
+      "vol": 0.3,
+      "funding_nodes": [
+        {
+          "date": "2026-07-01",
+          "rate": 0.02
+        },
+        {
+          "date": "2027-01-01",
+          "rate": 0.028
+        },
+        {
+          "date": "2027-07-01",
+          "rate": 0.035
+        }
+      ],
+      "carry_nodes": [
+        {
+          "date": "2026-07-01",
+          "rate": 0.12
+        },
+        {
+          "date": "2027-01-01",
+          "rate": 0.09
+        },
+        {
+          "date": "2027-07-01",
+          "rate": 0.06
+        }
+      ],
+      "dividends": [],
+      "regimes": [
+        "american_call",
+        "nonflat_carry",
+        "long_maturity"
+      ],
+      "reference_price": 18.53294112045275
+    },
+    {
+      "id": "shaped-curves-multiple-cash-dividends-call",
+      "spot": 108.0,
+      "strike": 100.0,
+      "expiry_date": "2027-01-01",
+      "type": "call",
+      "style": "american",
+      "vol": 0.28,
+      "funding_nodes": [
+        {
+          "date": "2026-04-01",
+          "rate": 0.005
+        },
+        {
+          "date": "2026-09-01",
+          "rate": 0.035
+        },
+        {
+          "date": "2027-01-01",
+          "rate": 0.05
+        }
+      ],
+      "carry_nodes": [
+        {
+          "date": "2026-04-01",
+          "rate": 0.004
+        },
+        {
+          "date": "2026-09-01",
+          "rate": 0.012
+        },
+        {
+          "date": "2027-01-01",
+          "rate": 0.02
+        }
+      ],
+      "dividends": [
+        {
+          "date": "2026-04-01",
+          "amount": 2.0
+        },
+        {
+          "date": "2026-09-01",
+          "amount": 1.5
+        }
+      ],
+      "regimes": [
+        "american_call",
+        "cash_dividends",
+        "multiple_dividends",
+        "shaped_curves"
+      ],
+      "reference_price": 15.292109705959893
+    },
+    {
+      "id": "deep-otm-high-volatility-long-put",
+      "spot": 145.0,
+      "strike": 80.0,
+      "expiry_date": "2028-01-01",
+      "type": "put",
+      "style": "american",
+      "vol": 0.8,
+      "funding_nodes": [
+        {
+          "date": "2026-07-01",
+          "rate": -0.01
+        },
+        {
+          "date": "2027-01-01",
+          "rate": 0.015
+        },
+        {
+          "date": "2028-01-01",
+          "rate": 0.045
+        }
+      ],
+      "carry_nodes": [
+        {
+          "date": "2026-07-01",
+          "rate": 0.03
+        },
+        {
+          "date": "2027-01-01",
+          "rate": 0.015
+        },
+        {
+          "date": "2028-01-01",
+          "rate": 0.005
+        }
+      ],
+      "dividends": [],
+      "regimes": [
+        "american_put",
+        "deep_otm",
+        "high_volatility",
+        "long_maturity",
+        "negative_rates"
+      ],
+      "reference_price": 19.20704008773519
+    }
+  ]
+}

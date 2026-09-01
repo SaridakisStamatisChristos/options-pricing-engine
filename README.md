@@ -23,11 +23,11 @@ decision or production risk process.
 
 | Capability | Implementation | Important boundary |
 | --- | --- | --- |
-| European valuation | Black–Scholes with continuous dividends; adaptive CRR; terminal Monte Carlo; Crank–Nicolson PDE | Deterministic cash dividends are explicit spot jumps in CRR/PDE only; unsupported models reject them |
-| American valuation | Adaptive CRR; cross-fitted Longstaff–Schwartz; Crank–Nicolson/Rannacher PDE with independent PSOR and penalty solvers | Cash-dividend American exercise is supported by CRR and both PDE LCP solvers; LSMC currently rejects cash schedules |
+| European valuation | Black–Scholes with continuous dividends; adaptive CRR; terminal Monte Carlo; Crank–Nicolson PDE | Dated Black–Scholes, CRR, and PDE can consume deterministic shaped funding/carry curves directly; deterministic cash dividends remain explicit spot jumps in CRR/PDE only |
+| American valuation | Adaptive CRR; cross-fitted Longstaff–Schwartz; Crank–Nicolson/Rannacher PDE with independent PSOR and penalty solvers | CRR/PDE are truly curve-aware; LSMC rejects curve-aware requests rather than flattening early-exercise dynamics |
 | Monte Carlo inference | Antithetic pairs, cross-fitted discounted-underlying control variate, independently scrambled Sobol replicates, Student-t intervals over independent units | Raw and no-arbitrage-projected estimates and intervals are both retained; unseeded requests bypass cache |
 | Greeks | Analytic Black–Scholes; tree/finite-difference CRR; pathwise and likelihood-ratio Monte Carlo estimators with fallbacks | Monte Carlo Greeks include estimator metadata |
-| Market conventions | Typed dates/day counts/ex-dates, explicit holiday calendars and settlement, continuous zero/discount/dividend curves, deterministic cash-dividend schedules, auditable forwards | No inferred exchange holidays, curve bootstrapping, entitlement inference, or stochastic dividends |
+| Market conventions | Typed dates/day counts/ex-dates, explicit holiday calendars and settlement, continuous zero/discount/dividend curves, exact interval-factor adapters, deterministic cash-dividend schedules, auditable forwards | No inferred exchange holidays, curve bootstrapping, entitlement inference, or stochastic dividends |
 | Smile calibration | SABR; Heston with independent Gauss–Laguerre/COS pricing and optional per-tenor or globally shared parameters | Weighting and deterministic strike/tenor holdouts are explicit; both Heston modes report Feller, bound-proximity, and optimizer diagnostics |
 | Volatility surfaces | Raw-SVI slice diagnostics; global power-law SSVI with monotone ATM variance; strike, parity, convexity, and calendar checks | SSVI enforces sufficient wing/curvature constraints and validates density on a dense grid |
 | Service controls | OIDC/JWKS authentication, scopes, bounded bodies, rate limits, back-pressure, metrics, replay capsules | Rate-limit/idempotency/replay state is process-local; run one worker per container |
@@ -75,8 +75,9 @@ print(result.theoretical_price, result.delta, result.vega)
 ```
 
 For dated valuation, `options_engine.market` resolves explicit civil dates,
-day counts, business calendars, settlement lags, and funding/dividend curves
-into the scalar inputs consumed by the unchanged numerical kernels:
+day counts, business calendars, settlement lags, and funding/dividend curves.
+The dated API uses true deterministic curve evolution by default for analytic
+European Black–Scholes, CRR, and finite differences:
 
 ```python
 from datetime import date
@@ -109,6 +110,10 @@ user-supplied holidays, T+n settlement, interpolation/extrapolation policy,
 and the exact forward-resolution formulas are documented in
 [Market conventions](docs/MARKET_CONVENTIONS.md). The original
 `OptionContract`, `MarketData`, and `price_option()` scalar API is unchanged.
+`price_dated_option(..., curve_aware=False)` explicitly selects the prior
+endpoint-equivalent compatibility path. Terminal Monte Carlo and
+Longstaff–Schwartz are not advertised as dynamically curve-aware; a true-curve
+request for either fails clearly instead of silently flattening the curves.
 
 For deterministic cash dividends, attach an explicit schedule and choose CRR
 or PDE; the cash amounts are not folded into `dividend_yield`:

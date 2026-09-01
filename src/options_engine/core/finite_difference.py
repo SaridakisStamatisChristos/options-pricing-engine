@@ -24,6 +24,7 @@ from typing import ClassVar, Literal
 
 import numpy as np
 
+from ..term_structure import DeterministicTermStructure
 from ..utils.validation import validate_discrete_dividends, validate_pricing_parameters
 from .models import ExerciseStyle, MarketData, OptionContract, OptionType, PricingResult
 
@@ -120,6 +121,24 @@ class FiniteDifferenceDiagnostics:
     cash_dividend_interpolation: str | None = None
     min_time_step: float = 0.0
     max_time_step: float = 0.0
+    curve_aware_mode: bool = False
+    discount_curve_id: str | None = None
+    carry_curve_id: str | None = None
+    pricing_context_id: str | None = None
+    funding_curve_intervals: int = 0
+    carry_curve_intervals: int = 0
+    actual_time_mesh: tuple[float, ...] = ()
+    effective_step_start_times: tuple[float, ...] = ()
+    effective_step_end_times: tuple[float, ...] = ()
+    effective_step_funding_rates: tuple[float, ...] = ()
+    effective_step_carry_rates: tuple[float, ...] = ()
+    curve_node_times: tuple[float, ...] = ()
+    curve_node_alignment_status: bool = True
+    cash_dividend_alignment_status: bool = True
+    min_local_funding_rate: float | None = None
+    max_local_funding_rate: float | None = None
+    min_local_carry_rate: float | None = None
+    max_local_carry_rate: float | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -185,6 +204,24 @@ class FiniteDifferenceDiagnostics:
             "cash_dividend_interpolation": self.cash_dividend_interpolation,
             "min_time_step": self.min_time_step,
             "max_time_step": self.max_time_step,
+            "curve_aware_mode": self.curve_aware_mode,
+            "discount_curve_id": self.discount_curve_id,
+            "carry_curve_id": self.carry_curve_id,
+            "pricing_context_id": self.pricing_context_id,
+            "funding_curve_intervals": self.funding_curve_intervals,
+            "carry_curve_intervals": self.carry_curve_intervals,
+            "actual_time_mesh": self.actual_time_mesh,
+            "effective_step_start_times": self.effective_step_start_times,
+            "effective_step_end_times": self.effective_step_end_times,
+            "effective_step_funding_rates": self.effective_step_funding_rates,
+            "effective_step_carry_rates": self.effective_step_carry_rates,
+            "curve_node_times": self.curve_node_times,
+            "curve_node_alignment_status": self.curve_node_alignment_status,
+            "cash_dividend_alignment_status": self.cash_dividend_alignment_status,
+            "min_local_funding_rate": self.min_local_funding_rate,
+            "max_local_funding_rate": self.max_local_funding_rate,
+            "min_local_carry_rate": self.min_local_carry_rate,
+            "max_local_carry_rate": self.max_local_carry_rate,
         }
 
 
@@ -233,6 +270,13 @@ class _GridSolution:
     max_time_step: float
     rannacher_half_steps: int
     cash_dividend_jumps_applied: int
+    actual_time_mesh: tuple[float, ...]
+    effective_step_start_times: tuple[float, ...]
+    effective_step_end_times: tuple[float, ...]
+    effective_step_funding_rates: tuple[float, ...]
+    effective_step_carry_rates: tuple[float, ...]
+    curve_node_aligned: bool
+    cash_dividend_aligned: bool
 
 
 @dataclass(slots=True)
@@ -343,31 +387,47 @@ class FiniteDifferenceModel:
         tau: float,
         *,
         include_cash_event_at_tau: bool = False,
+        term_structure: DeterministicTermStructure | None = None,
     ) -> tuple[float, float]:
         """Return asymptotically exact Dirichlet values at zero and ``s_max``."""
 
         rate = market_data.risk_free_rate
         dividend = market_data.dividend_yield
         strike = contract.strike_price
+        maturity = contract.time_to_expiry
+        forward_time = maturity - tau
+        if term_structure is None:
+            discount_to_expiry = math.exp(-rate * tau)
+            carry_to_expiry = math.exp(-dividend * tau)
+        else:
+            discount_to_expiry = term_structure.discount_factor(forward_time, maturity)
+            carry_to_expiry = term_structure.carry_factor(forward_time, maturity)
         if contract.option_type is OptionType.CALL:
             lower = 0.0
-            tolerance = 32.0 * np.finfo(float).eps * max(1.0, contract.time_to_expiry)
+            tolerance = 32.0 * np.finfo(float).eps * max(1.0, maturity)
             cash_adjustment = 0.0
             for cash_dividend in market_data.cash_dividends.dividends:
-                event_tau = contract.time_to_expiry - cash_dividend.ex_time
+                event_tau = maturity - cash_dividend.ex_time
                 event_is_future = (
                     event_tau <= tau + tolerance
                     if include_cash_event_at_tau
                     else event_tau < tau - tolerance
                 )
                 if event_is_future:
-                    cash_adjustment += cash_dividend.amount * math.exp(
-                        -rate * (tau - event_tau) - dividend * event_tau
-                    )
+                    if term_structure is None:
+                        cash_adjustment += cash_dividend.amount * math.exp(
+                            -rate * (tau - event_tau) - dividend * event_tau
+                        )
+                    else:
+                        event_discount = term_structure.discount_factor(
+                            cash_dividend.ex_time, maturity
+                        )
+                        event_carry = term_structure.carry_factor(cash_dividend.ex_time, maturity)
+                        cash_adjustment += (
+                            cash_dividend.amount * discount_to_expiry * event_carry / event_discount
+                        )
             european_upper = max(
-                s_max * math.exp(-dividend * tau)
-                - strike * math.exp(-rate * tau)
-                - cash_adjustment,
+                s_max * carry_to_expiry - strike * discount_to_expiry - cash_adjustment,
                 0.0,
             )
             upper = (
@@ -378,7 +438,7 @@ class FiniteDifferenceModel:
             return lower, upper
 
         upper = 0.0
-        european_lower = strike * math.exp(-rate * tau)
+        european_lower = strike * discount_to_expiry
         lower = (
             max(strike, european_lower)
             if contract.exercise_style is ExerciseStyle.AMERICAN
@@ -391,6 +451,7 @@ class FiniteDifferenceModel:
         contract: OptionContract,
         market_data: MarketData,
         volatility: float,
+        term_structure: DeterministicTermStructure | None = None,
     ) -> float:
         maturity = contract.time_to_expiry
         if self.s_max_override is not None:
@@ -399,11 +460,12 @@ class FiniteDifferenceModel:
                 raise ValueError("s_max_override must exceed both spot and strike")
             return self.s_max_override
 
-        drift_tail = max(
-            (market_data.risk_free_rate - market_data.dividend_yield - 0.5 * volatility**2)
-            * maturity,
-            0.0,
+        integrated_growth = (
+            (market_data.risk_free_rate - market_data.dividend_yield) * maturity
+            if term_structure is None
+            else math.log(term_structure.growth_factor(0.0, maturity))
         )
+        drift_tail = max(integrated_growth - 0.5 * volatility**2 * maturity, 0.0)
         log_tail = min(
             drift_tail + self.tail_standard_deviations * volatility * math.sqrt(maturity),
             250.0,
@@ -477,7 +539,8 @@ class FiniteDifferenceModel:
         contract: OptionContract,
         market_data: MarketData,
         configured_steps: int,
-    ) -> tuple[np.ndarray, dict[int, float], tuple[float, ...]]:
+        term_structure: DeterministicTermStructure | None = None,
+    ) -> tuple[np.ndarray, dict[int, float], tuple[float, ...], tuple[float, ...]]:
         """Return an ex-event-aligned backward-time mesh.
 
         Each cash ex-time ``t_i`` becomes the exact backward-time anchor
@@ -496,7 +559,13 @@ class FiniteDifferenceModel:
             key=lambda item: item[0],
         )
         event_taus = tuple(event_tau for event_tau, _amount in events)
-        anchors = np.asarray((0.0, *event_taus, maturity), dtype=float)
+        curve_node_taus = (
+            tuple(sorted(maturity - node_time for node_time in term_structure.curve_node_times))
+            if term_structure is not None
+            else ()
+        )
+        anchor_values = sorted({0.0, *event_taus, *curve_node_taus, maturity})
+        anchors = np.asarray(anchor_values, dtype=float)
         spans = np.diff(anchors)
         interval_count = int(spans.size)
         effective_steps = max(configured_steps, interval_count)
@@ -513,12 +582,15 @@ class FiniteDifferenceModel:
         step_sizes: list[float] = []
         events_after_step: dict[int, float] = {}
         completed_steps = 0
+        events_by_tau = dict(events)
         for span_index, (span, count) in enumerate(zip(spans, allocations, strict=True)):
             interval_size = float(span / count)
             step_sizes.extend([interval_size] * int(count))
             completed_steps += int(count)
-            if span_index < len(events):
-                events_after_step[completed_steps] = events[span_index][1]
+            anchor_at_span_end = anchor_values[span_index + 1]
+            cash_amount = events_by_tau.get(anchor_at_span_end)
+            if cash_amount is not None:
+                events_after_step[completed_steps] = cash_amount
 
         mesh = np.asarray(step_sizes, dtype=float)
         # Correct the last ulp so cumulative time is exactly the model maturity.
@@ -529,7 +601,7 @@ class FiniteDifferenceModel:
             or not math.isclose(float(np.sum(mesh)), maturity, rel_tol=0.0, abs_tol=1e-14)
         ):
             raise RuntimeError("finite-difference time-mesh construction invariant failed")
-        return mesh, events_after_step, event_taus
+        return mesh, events_after_step, event_taus, curve_node_taus
 
     def _apply_cash_dividend_jump(
         self,
@@ -541,6 +613,7 @@ class FiniteDifferenceModel:
         s_max: float,
         tau: float,
         amount: float,
+        term_structure: DeterministicTermStructure | None = None,
     ) -> np.ndarray:
         """Apply ``V(t-,S)=V(t+,max(S-D,0))`` on the spot mesh."""
 
@@ -554,6 +627,7 @@ class FiniteDifferenceModel:
             s_max,
             tau,
             include_cash_event_at_tau=True,
+            term_structure=term_structure,
         )
         if not np.isfinite(jumped).all():
             raise ValueError("cash-dividend jump produced non-finite PDE values")
@@ -564,6 +638,9 @@ class FiniteDifferenceModel:
         spot_grid: np.ndarray,
         market_data: MarketData,
         volatility: float,
+        *,
+        funding_rate: float | None = None,
+        carry_rate: float | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Build the Black--Scholes operator on an unequal-spacing mesh."""
 
@@ -579,12 +656,12 @@ class FiniteDifferenceModel:
         second_diagonal = -2.0 / (left_steps * right_steps)
         second_right = 2.0 / (right_steps * total_steps)
 
+        rate = market_data.risk_free_rate if funding_rate is None else funding_rate
+        dividend = market_data.dividend_yield if carry_rate is None else carry_rate
         diffusion = 0.5 * volatility**2 * interior_spots**2
-        drift = (market_data.risk_free_rate - market_data.dividend_yield) * interior_spots
+        drift = (rate - dividend) * interior_spots
         operator_lower = diffusion * second_left + drift * first_left
-        operator_diagonal = (
-            diffusion * second_diagonal + drift * first_diagonal - market_data.risk_free_rate
-        )
+        operator_diagonal = diffusion * second_diagonal + drift * first_diagonal - rate
         operator_upper = diffusion * second_right + drift * first_right
         return operator_lower, operator_diagonal, operator_upper
 
@@ -786,11 +863,24 @@ class FiniteDifferenceModel:
         step_size: float,
         theta: float,
         volatility: float,
+        term_structure: DeterministicTermStructure | None = None,
     ) -> tuple[np.ndarray, _StepStats]:
         """Advance the solution by one theta-scheme time step."""
 
+        tau_new = tau_old + step_size
+        if term_structure is None:
+            funding_rate = market_data.risk_free_rate
+            carry_rate = market_data.dividend_yield
+        else:
+            forward_start = contract.time_to_expiry - tau_new
+            forward_end = contract.time_to_expiry - tau_old
+            funding_rate, carry_rate = term_structure.step_rates(forward_start, forward_end)
         operator_lower, operator_diagonal, operator_upper = self._operator_coefficients(
-            spot_grid, market_data, volatility
+            spot_grid,
+            market_data,
+            volatility,
+            funding_rate=funding_rate,
+            carry_rate=carry_rate,
         )
         interior_count = spot_grid.size - 2
         diagonal = 1.0 - theta * step_size * operator_diagonal
@@ -801,8 +891,13 @@ class FiniteDifferenceModel:
         rhs += (1.0 - theta) * step_size * operator_lower * values[:-2]
         rhs += (1.0 - theta) * step_size * operator_upper * values[2:]
 
-        tau_new = tau_old + step_size
-        new_lower, new_upper = self._boundaries(contract, market_data, s_max, tau_new)
+        new_lower, new_upper = self._boundaries(
+            contract,
+            market_data,
+            s_max,
+            tau_new,
+            term_structure=term_structure,
+        )
         rhs[0] += theta * step_size * operator_lower[0] * new_lower
         rhs[-1] += theta * step_size * operator_upper[-1] * new_upper
 
@@ -849,18 +944,25 @@ class FiniteDifferenceModel:
     def _price_bounds(
         contract: OptionContract,
         market_data: MarketData,
+        term_structure: DeterministicTermStructure | None = None,
     ) -> tuple[float, float]:
         maturity = contract.time_to_expiry
         spot = market_data.spot_price
         strike = contract.strike_price
+        if term_structure is None:
+            discount = math.exp(-market_data.risk_free_rate * maturity)
+            carry = math.exp(-market_data.dividend_yield * maturity)
+        else:
+            discount = term_structure.discount_factor(0.0, maturity)
+            carry = term_structure.carry_factor(0.0, maturity)
         if contract.option_type is OptionType.CALL:
             intrinsic = max(spot - strike, 0.0)
             lower = intrinsic if contract.exercise_style is ExerciseStyle.AMERICAN else 0.0
-            upper = spot * math.exp(max(-market_data.dividend_yield * maturity, 0.0))
+            upper = spot * max(carry, 1.0)
         else:
             intrinsic = max(strike - spot, 0.0)
             lower = intrinsic if contract.exercise_style is ExerciseStyle.AMERICAN else 0.0
-            upper = strike * math.exp(max(-market_data.risk_free_rate * maturity, 0.0))
+            upper = strike * max(discount, 1.0)
         return lower, upper
 
     @staticmethod
@@ -869,24 +971,37 @@ class FiniteDifferenceModel:
         market_data: MarketData,
         spot_grid: np.ndarray,
         values: np.ndarray,
+        term_structure: DeterministicTermStructure | None = None,
     ) -> tuple[float, float]:
         maturity = contract.time_to_expiry
         numerical_lower = float((values[1] - values[0]) / (spot_grid[1] - spot_grid[0]))
         numerical_upper = float((values[-1] - values[-2]) / (spot_grid[-1] - spot_grid[-2]))
-        discounted_delta = math.exp(-market_data.dividend_yield * maturity)
+        if term_structure is None:
+            discount = math.exp(-market_data.risk_free_rate * maturity)
+            discounted_delta = math.exp(-market_data.dividend_yield * maturity)
+        else:
+            discount = term_structure.discount_factor(0.0, maturity)
+            discounted_delta = term_structure.carry_factor(0.0, maturity)
         if contract.option_type is OptionType.CALL:
             expected_lower = 0.0
-            european_upper = spot_grid[-1] * discounted_delta - contract.strike_price * math.exp(
-                -market_data.risk_free_rate * maturity
-            )
-            european_upper -= sum(
-                cash_dividend.amount
-                * math.exp(
-                    -market_data.risk_free_rate * cash_dividend.ex_time
-                    - market_data.dividend_yield * (maturity - cash_dividend.ex_time)
+            european_upper = spot_grid[-1] * discounted_delta - contract.strike_price * discount
+            if term_structure is None:
+                european_upper -= sum(
+                    cash_dividend.amount
+                    * math.exp(
+                        -market_data.risk_free_rate * cash_dividend.ex_time
+                        - market_data.dividend_yield * (maturity - cash_dividend.ex_time)
+                    )
+                    for cash_dividend in market_data.cash_dividends.dividends
                 )
-                for cash_dividend in market_data.cash_dividends.dividends
-            )
+            else:
+                european_upper -= sum(
+                    cash_dividend.amount
+                    * discount
+                    * term_structure.carry_factor(cash_dividend.ex_time, maturity)
+                    / term_structure.discount_factor(cash_dividend.ex_time, maturity)
+                    for cash_dividend in market_data.cash_dividends.dividends
+                )
             intrinsic_upper = spot_grid[-1] - contract.strike_price
             comparison_tolerance = 1e-12 * max(1.0, abs(intrinsic_upper), abs(european_upper))
             if (
@@ -900,9 +1015,7 @@ class FiniteDifferenceModel:
                 expected_upper = discounted_delta
         else:
             expected_upper = 0.0
-            european_lower = contract.strike_price * math.exp(
-                -market_data.risk_free_rate * maturity
-            )
+            european_lower = contract.strike_price * discount
             comparison_tolerance = 1e-12 * max(1.0, contract.strike_price, abs(european_lower))
             if (
                 contract.exercise_style is ExerciseStyle.AMERICAN
@@ -943,15 +1056,33 @@ class FiniteDifferenceModel:
         s_max: float,
         space_steps: int,
         time_steps: int,
+        term_structure: DeterministicTermStructure | None = None,
     ) -> _GridSolution:
         spot_grid = self._spot_grid(contract, market_data, s_max, space_steps)
-        time_mesh, events_after_step, _event_taus = self._time_mesh(
-            contract, market_data, time_steps
+        time_mesh, events_after_step, event_taus, curve_node_taus = self._time_mesh(
+            contract, market_data, time_steps, term_structure
         )
         effective_time_steps = int(time_mesh.size)
+        if effective_time_steps > self.MAX_TIME_STEPS:
+            raise ValueError(
+                "anchored finite-difference time mesh exceeds the configured step limit"
+            )
+        rannacher_extra_steps = (
+            1 + len(market_data.cash_dividends) if self.rannacher_smoothing else 0
+        )
+        if space_steps * (effective_time_steps + rannacher_extra_steps) > self.MAX_WORK_ITEMS:
+            raise ValueError(
+                f"anchored finite-difference workload exceeds {self.MAX_WORK_ITEMS} grid updates"
+            )
         intrinsic = self._intrinsic(contract, spot_grid)
         values = intrinsic.copy()
-        values[0], values[-1] = self._boundaries(contract, market_data, s_max, 0.0)
+        values[0], values[-1] = self._boundaries(
+            contract,
+            market_data,
+            s_max,
+            0.0,
+            term_structure=term_structure,
+        )
 
         tau = 0.0
         max_iterations_used = 0
@@ -965,6 +1096,10 @@ class FiniteDifferenceModel:
         rannacher_pending = self.rannacher_smoothing
         rannacher_half_steps = 0
         cash_dividend_jumps_applied = 0
+        step_start_times: list[float] = []
+        step_end_times: list[float] = []
+        step_funding_rates: list[float] = []
+        step_carry_rates: list[float] = []
 
         for time_index, time_step in enumerate(time_mesh):
             if time_index == effective_time_steps - 1:
@@ -977,6 +1112,14 @@ class FiniteDifferenceModel:
             else:
                 substeps = ((time_step, 0.5),)
             for step_size, theta in substeps:
+                if term_structure is not None:
+                    forward_start = contract.time_to_expiry - (tau + step_size)
+                    forward_end = contract.time_to_expiry - tau
+                    funding_rate, carry_rate = term_structure.step_rates(forward_start, forward_end)
+                    step_start_times.append(forward_start)
+                    step_end_times.append(forward_end)
+                    step_funding_rates.append(funding_rate)
+                    step_carry_rates.append(carry_rate)
                 values, step_stats = self._advance(
                     values,
                     intrinsic,
@@ -988,6 +1131,7 @@ class FiniteDifferenceModel:
                     step_size=step_size,
                     theta=theta,
                     volatility=volatility,
+                    term_structure=term_structure,
                 )
                 tau += step_size
                 max_iterations_used = max(max_iterations_used, step_stats.iterations)
@@ -1007,12 +1151,13 @@ class FiniteDifferenceModel:
                     s_max=s_max,
                     tau=tau,
                     amount=cash_amount,
+                    term_structure=term_structure,
                 )
                 cash_dividend_jumps_applied += 1
                 rannacher_pending = self.rannacher_smoothing
 
         raw_price = float(np.interp(market_data.spot_price, spot_grid, values))
-        lower_bound, upper_bound = self._price_bounds(contract, market_data)
+        lower_bound, upper_bound = self._price_bounds(contract, market_data, term_structure)
         price = min(max(raw_price, lower_bound), upper_bound)
 
         delta_grid = np.gradient(values, spot_grid, edge_order=2)
@@ -1022,7 +1167,43 @@ class FiniteDifferenceModel:
         previous_price = float(np.interp(market_data.spot_price, spot_grid, layer_before_final))
         theta = (previous_price - raw_price) / final_time_step / 365.0
         lower_delta_residual, upper_delta_residual = self._boundary_delta_residuals(
-            contract, market_data, spot_grid, values
+            contract, market_data, spot_grid, values, term_structure
+        )
+        tau_boundaries = np.concatenate(([0.0], np.cumsum(time_mesh)))
+        forward_boundaries = contract.time_to_expiry - tau_boundaries
+        forward_boundaries[-1] = 0.0
+        base_time_mesh = tuple(float(value) for value in forward_boundaries[::-1])
+        chronological_starts = tuple(reversed(step_start_times))
+        chronological_ends = tuple(reversed(step_end_times))
+        actual_time_mesh = (
+            (chronological_starts[0], *chronological_ends)
+            if chronological_starts
+            else base_time_mesh
+        )
+        alignment_tolerance = 2e-13 * max(1.0, contract.time_to_expiry)
+        curve_node_aligned = all(
+            any(
+                math.isclose(
+                    contract.time_to_expiry - node_tau,
+                    mesh_time,
+                    rel_tol=0.0,
+                    abs_tol=alignment_tolerance,
+                )
+                for mesh_time in actual_time_mesh
+            )
+            for node_tau in curve_node_taus
+        )
+        cash_dividend_aligned = all(
+            any(
+                math.isclose(
+                    contract.time_to_expiry - event_tau,
+                    mesh_time,
+                    rel_tol=0.0,
+                    abs_tol=alignment_tolerance,
+                )
+                for mesh_time in actual_time_mesh
+            )
+            for event_tau in event_taus
         )
 
         return _GridSolution(
@@ -1050,6 +1231,13 @@ class FiniteDifferenceModel:
             max_time_step=float(np.max(time_mesh)),
             rannacher_half_steps=rannacher_half_steps,
             cash_dividend_jumps_applied=cash_dividend_jumps_applied,
+            actual_time_mesh=actual_time_mesh,
+            effective_step_start_times=chronological_starts,
+            effective_step_end_times=chronological_ends,
+            effective_step_funding_rates=tuple(reversed(step_funding_rates)),
+            effective_step_carry_rates=tuple(reversed(step_carry_rates)),
+            curve_node_aligned=curve_node_aligned,
+            cash_dividend_aligned=cash_dividend_aligned,
         )
 
     def _convergence_diagnostics(
@@ -1059,6 +1247,7 @@ class FiniteDifferenceModel:
         projections: tuple[bool, ...],
         *,
         has_cash_dividends: bool = False,
+        curve_aware: bool = False,
     ) -> tuple[tuple[float, ...], float | None, float | None, float | None, str]:
         differences = tuple(
             abs(prices[index] - prices[index - 1]) for index in range(1, len(prices))
@@ -1088,6 +1277,7 @@ class FiniteDifferenceModel:
             contract.exercise_style is ExerciseStyle.EUROPEAN
             and self.rannacher_smoothing
             and not has_cash_dividends
+            and not curve_aware
             and not any(projections)
         )
         order = 2.0 if formal_second_order else observed_order
@@ -1109,13 +1299,18 @@ class FiniteDifferenceModel:
         market_data: MarketData,
         volatility: float,
         s_max: float,
+        term_structure: DeterministicTermStructure | None = None,
     ) -> float:
         maturity = contract.time_to_expiry
         standard_deviation = volatility * math.sqrt(maturity)
+        if term_structure is None:
+            integrated_growth = (market_data.risk_free_rate - market_data.dividend_yield) * maturity
+        else:
+            integrated_growth = math.log(term_structure.growth_factor(0.0, maturity))
         z_score = (
             math.log(s_max / market_data.spot_price)
-            - (market_data.risk_free_rate - market_data.dividend_yield - 0.5 * volatility**2)
-            * maturity
+            - integrated_growth
+            + 0.5 * volatility**2 * maturity
         ) / standard_deviation
         return 0.5 * math.erfc(z_score / math.sqrt(2.0))
 
@@ -1124,25 +1319,80 @@ class FiniteDifferenceModel:
         contract: OptionContract,
         market_data: MarketData,
         volatility: float,
+        *,
+        term_structure: DeterministicTermStructure | None = None,
     ) -> FiniteDifferenceAnalysis:
         """Price a vanilla contract and return the full numerical audit trail."""
 
         validate_pricing_parameters(contract, market_data, volatility)
         validate_discrete_dividends(contract, market_data)
+        if term_structure is not None:
+            if not isinstance(term_structure, DeterministicTermStructure):
+                raise TypeError("term_structure must be a DeterministicTermStructure")
+            if not math.isclose(
+                term_structure.maturity,
+                contract.time_to_expiry,
+                rel_tol=0.0,
+                abs_tol=1e-14 * max(1.0, contract.time_to_expiry),
+            ):
+                raise ValueError("term-structure maturity must match the option contract")
+            requested_cash_times = tuple(
+                dividend.ex_time for dividend in market_data.cash_dividends.dividends
+            )
+            if len(requested_cash_times) != len(term_structure.cash_dividend_times) or any(
+                not math.isclose(left, right, rel_tol=0.0, abs_tol=1e-14)
+                for left, right in zip(
+                    requested_cash_times,
+                    term_structure.cash_dividend_times,
+                    strict=True,
+                )
+            ):
+                raise ValueError(
+                    "term-structure cash-dividend anchors must match market_data exactly"
+                )
         start = time.perf_counter()
-        s_max = self._resolve_s_max(contract, market_data, volatility)
+        s_max = self._resolve_s_max(contract, market_data, volatility, term_structure)
 
-        solutions: list[_GridSolution] = []
+        level_specs: list[tuple[int, int]] = []
+        projected_work_items = 0
+        rannacher_extra_steps = (
+            1 + len(market_data.cash_dividends) if self.rannacher_smoothing else 0
+        )
         for level in range(self.refinement_levels):
             factor = self.refinement_ratio**level
+            level_space_steps = self.space_steps * factor
+            configured_time_steps = self.time_steps * factor
+            level_time_mesh = self._time_mesh(
+                contract,
+                market_data,
+                configured_time_steps,
+                term_structure,
+            )[0]
+            effective_time_steps = int(level_time_mesh.size)
+            if effective_time_steps > self.MAX_TIME_STEPS:
+                raise ValueError(
+                    "anchored finite-difference time mesh exceeds the configured step limit"
+                )
+            projected_work_items += level_space_steps * (
+                effective_time_steps + rannacher_extra_steps
+            )
+            level_specs.append((level_space_steps, configured_time_steps))
+        if projected_work_items > self.MAX_WORK_ITEMS:
+            raise ValueError(
+                f"anchored finite-difference workload exceeds {self.MAX_WORK_ITEMS} grid updates"
+            )
+
+        solutions: list[_GridSolution] = []
+        for level_space_steps, configured_time_steps in level_specs:
             solutions.append(
                 self._solve_grid(
                     contract,
                     market_data,
                     volatility,
                     s_max=s_max,
-                    space_steps=self.space_steps * factor,
-                    time_steps=self.time_steps * factor,
+                    space_steps=level_space_steps,
+                    time_steps=configured_time_steps,
+                    term_structure=term_structure,
                 )
             )
         finest = solutions[-1]
@@ -1158,6 +1408,7 @@ class FiniteDifferenceModel:
             level_prices,
             tuple(solution.projection_applied for solution in solutions),
             has_cash_dividends=bool(market_data.cash_dividends),
+            curve_aware=term_structure is not None,
         )
 
         spacing = np.diff(finest.spot_grid)
@@ -1245,7 +1496,7 @@ class FiniteDifferenceModel:
             lower_boundary_delta_residual=finest.lower_boundary_delta_residual,
             upper_boundary_delta_residual=finest.upper_boundary_delta_residual,
             lognormal_upper_tail_probability=self._upper_tail_probability(
-                contract, market_data, volatility, s_max
+                contract, market_data, volatility, s_max, term_structure
             ),
             cash_dividend_count=len(market_data.cash_dividends),
             cash_dividend_schedule_id=(
@@ -1262,17 +1513,82 @@ class FiniteDifferenceModel:
                 for dividend in reversed(market_data.cash_dividends.dividends)
             ),
             cash_dividend_jumps_applied=finest.cash_dividend_jumps_applied,
-            cash_dividend_event_aligned=True,
+            cash_dividend_event_aligned=finest.cash_dividend_aligned,
             cash_dividend_interpolation=(
                 "piecewise_linear" if market_data.cash_dividends else None
             ),
             min_time_step=finest.min_time_step,
             max_time_step=finest.max_time_step,
+            curve_aware_mode=term_structure is not None,
+            discount_curve_id=(
+                term_structure.discount_curve_id if term_structure is not None else None
+            ),
+            carry_curve_id=(term_structure.carry_curve_id if term_structure is not None else None),
+            pricing_context_id=(term_structure.context_id if term_structure is not None else None),
+            funding_curve_intervals=(
+                len(term_structure.funding.segments) if term_structure is not None else 0
+            ),
+            carry_curve_intervals=(
+                len(term_structure.carry.segments) if term_structure is not None else 0
+            ),
+            actual_time_mesh=finest.actual_time_mesh,
+            effective_step_start_times=finest.effective_step_start_times,
+            effective_step_end_times=finest.effective_step_end_times,
+            effective_step_funding_rates=finest.effective_step_funding_rates,
+            effective_step_carry_rates=finest.effective_step_carry_rates,
+            curve_node_times=(
+                term_structure.curve_node_times if term_structure is not None else ()
+            ),
+            curve_node_alignment_status=finest.curve_node_aligned,
+            cash_dividend_alignment_status=finest.cash_dividend_aligned,
+            min_local_funding_rate=(
+                min(finest.effective_step_funding_rates)
+                if finest.effective_step_funding_rates
+                else None
+            ),
+            max_local_funding_rate=(
+                max(finest.effective_step_funding_rates)
+                if finest.effective_step_funding_rates
+                else None
+            ),
+            min_local_carry_rate=(
+                min(finest.effective_step_carry_rates)
+                if finest.effective_step_carry_rates
+                else None
+            ),
+            max_local_carry_rate=(
+                max(finest.effective_step_carry_rates)
+                if finest.effective_step_carry_rates
+                else None
+            ),
         )
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         solver_suffix = (
             f"_{self.exercise_solver}" if is_american and self.exercise_solver != "psor" else ""
         )
+        numerical_diagnostics = diagnostics.to_dict()
+        if term_structure is not None:
+            numerical_diagnostics.update(
+                {
+                    "factor_convention": "interval_ratio_exact",
+                    "curve_flattening": False,
+                    "cash_dividend_event_curve_factors": tuple(
+                        {
+                            "ex_time": dividend.ex_time,
+                            "discount_to_expiry": term_structure.discount_factor(
+                                dividend.ex_time, contract.time_to_expiry
+                            ),
+                            "carry_to_expiry": term_structure.carry_factor(
+                                dividend.ex_time, contract.time_to_expiry
+                            ),
+                            "growth_to_expiry": term_structure.growth_factor(
+                                dividend.ex_time, contract.time_to_expiry
+                            ),
+                        }
+                        for dividend in market_data.cash_dividends.dividends
+                    ),
+                }
+            )
         result = PricingResult(
             contract_id=contract.contract_id,
             theoretical_price=finest.price,
@@ -1283,10 +1599,11 @@ class FiniteDifferenceModel:
             computation_time_ms=elapsed_ms,
             model_used=(
                 "finite_difference_cn"
+                f"{'_curve_aware' if term_structure is not None else ''}"
                 f"{'_cash_dividend' if market_data.cash_dividends else ''}"
                 f"{solver_suffix}_{finest.space_steps}x{finest.time_steps}"
             ),
-            numerical_diagnostics=diagnostics.to_dict(),
+            numerical_diagnostics=numerical_diagnostics,
         )
         return FiniteDifferenceAnalysis(
             pricing_result=result,
@@ -1307,6 +1624,26 @@ class FiniteDifferenceModel:
             return self.price_with_diagnostics(contract, market_data, volatility).pricing_result
         except Exception:  # pragma: no cover - preserve context for API error mapping
             LOGGER.exception("Finite-difference pricing failed")
+            raise
+
+    def calculate_price_curve_aware(
+        self,
+        contract: OptionContract,
+        market_data: MarketData,
+        volatility: float,
+        term_structure: DeterministicTermStructure,
+    ) -> PricingResult:
+        """Price with exact deterministic interval funding/carry factors."""
+
+        try:
+            return self.price_with_diagnostics(
+                contract,
+                market_data,
+                volatility,
+                term_structure=term_structure,
+            ).pricing_result
+        except Exception:  # pragma: no cover - preserve context for API error mapping
+            LOGGER.exception("Curve-aware finite-difference pricing failed")
             raise
 
 

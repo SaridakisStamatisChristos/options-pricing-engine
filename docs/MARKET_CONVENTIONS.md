@@ -1,12 +1,13 @@
 # Market conventions and curve resolution
 
-The numerical pricing classes intentionally accept the compact scalar state
+The scalar pricing classes retain the compact state
 `(time_to_expiry, risk_free_rate, dividend_yield)` plus an optional immutable
-cash-dividend schedule on the same clock. The
-`options_engine.market` layer owns the dated market representation and resolves
-it before numerical dispatch. This keeps calendars and curve interpolation out
-of Black–Scholes, CRR, Monte Carlo, Longstaff–Schwartz, and finite differences
-while preserving their established APIs.
+cash-dividend schedule. The `options_engine.market` layer owns civil dates,
+calendars, settlement, and curve interpolation. For dated valuation it can
+either produce the historical endpoint-equivalent scalars or an immutable,
+date-free interval-factor context consumed by models with true deterministic
+term-structure support. Existing scalar constructors and `price_option()` are
+unchanged.
 
 ## Dates and day counts
 
@@ -69,7 +70,22 @@ validated. Canonical SHA-256 curve identifiers include the curve family,
 reference date, day count, extrapolation policy, dates, and exact hexadecimal
 floating-point values.
 
-## Forward and scalar resolution
+## Three pricing representations
+
+The library distinguishes three paths explicitly:
+
+1. **Scalar flat-rate pricing.** `OptionContract`, `MarketData`, and
+   `OptionsEngine.price_option()` use the supplied constant `r` and `q`.
+2. **Endpoint-equivalent dated compatibility pricing.**
+   `MarketEnvironment.resolve()` and
+   `price_dated_option(..., curve_aware=False)` reduce dated curves to one
+   `(r_eq,q_eq)` while preserving expiry discount and forward endpoints.
+3. **True curve-aware dated pricing.** `resolve_curve_aware()` and the default
+   `price_dated_option(..., curve_aware=True)` retain exact interval factors for
+   supported models. No expiry-equivalent rate is used in their dynamic
+   evolution.
+
+### Forward and endpoint-compatible resolution
 
 Let `t` be valuation, `t_s` spot settlement, and `T` adjusted expiry. Funding
 and carry factors between arbitrary dates are ratios of their reference-date
@@ -105,16 +121,55 @@ F_{cash}(t_s,T)=F_c(t_s,T)-A(T).
 The equivalent `q_eq` is still derived from `F_c`, not `F_cash`; the cash
 events are then supplied explicitly to CRR/PDE. This avoids double counting.
 For non-flat curves, one endpoint-equivalent `(r_eq,q_eq)` cannot reproduce
-every event-to-expiry accrual. Resolution diagnostics therefore report the
+every event-to-expiry accrual. Compatibility diagnostics therefore report the
 curve deduction, scalar-kernel deduction, and their mismatch. The numerical
 spot-jump model also floors the equity at zero, so `F_cash` is a transparent
 curve-bookkeeping forward rather than a volatility-dependent claim that
 overrides the documented limited-liability process.
 
+### True interval-factor representation
+
+Let model time run from `0` to `T`. The curve-aware adapter exposes
+
+\[
+D(t_0,t_1)=\frac{D(0,t_1)}{D(0,t_0)},\qquad
+Q(t_0,t_1)=\frac{Q(0,t_1)}{Q(0,t_0)}.
+\]
+
+For a numerical interval of length `Delta t`, the coefficients are obtained
+without differentiating the curves:
+
+\[
+r_{step}=-\frac{\log D(t_0,t_1)}{\Delta t},\qquad
+q_{step}=-\frac{\log Q(t_0,t_1)}{\Delta t}.
+\]
+
+The adapter represents built-in flat, linear-continuous-zero, and log-linear
+factor curves as immutable piecewise log-factor segments. Civil curve-node
+dates map to exact model-time anchors. If curve and contract day counts differ,
+native curve time is affinely re-parameterized between civil anchors; supplied
+factors at every anchor and at expiry remain exact. A date mapping that does
+not yield strictly increasing model/source times is rejected.
+
+Quoted spot settles on `t_s`. For a non-zero settlement lag, the basis
+`log(D(0,t_s)/Q(0,t_s))` is accrued only over `[0,t_s]` and then remains
+constant. This preserves the settlement-aware forward while leaving every
+post-settlement interval ratio unchanged. Because valid cash ex-dates must be
+after settlement, their event-to-expiry funding and carry factors are exactly
+the original curve ratios.
+
+European Black–Scholes depends only on `D(0,T)`, `Q(0,T)`, and integrated
+variance, so terminal-equivalent curves give the same value. American exercise
+compares continuation and intrinsic value at intermediate times; different
+paths of `D(t_i,t_j)` and `Q(t_i,t_j)` can therefore produce different prices
+despite identical expiry endpoints.
+
 `MarketEnvironment.resolve()` returns the scalar `OptionContract` and
 `MarketData` plus the original and adjusted dates, settlement date, all four
 funding/carry factors, forward, curve IDs, conventions ID, and equivalent
-rates. `OptionsEngine.price_dated_option()` attaches the same evidence under
+rates. `resolve_curve_aware()` adds the immutable factor context and verifies
+that it reproduces the supplied expiry discount and settlement-aware forward.
+`OptionsEngine.price_dated_option()` attaches the applicable evidence under
 `market_conventions`.
 
 The original scalar rate fields and `OptionsEngine.price_option()` call shape
@@ -168,10 +223,17 @@ with OptionsEngine(num_threads=1) as engine:
 
 ## Boundaries
 
+True curve-aware model support is explicit: finite difference and CRR support
+European/American exercise; analytic Black–Scholes supports European claims
+without cash dividends. Terminal Monte Carlo and Longstaff–Schwartz currently
+reject true-curve requests. Callers may deliberately select endpoint
+compatibility, but no unsupported request is flattened implicitly.
+
 This layer does not bootstrap curves, source market data, invent holiday
 calendars, infer ex-dates/entitlement, model uncertain dividends, or calculate
 bucketed curve risk.
-Model Greeks retain their established scalar-input meaning; in particular,
-rho is sensitivity to the endpoint-equivalent rate rather than a key-rate
-DV01. Those responsibilities require product- and desk-specific policies above
-this generic resolver.
+Scalar-model rho retains its established parallel scalar-rate meaning.
+Curve-aware Black–Scholes and CRR do not report rho without an explicit curve
+bump convention; analytic curve-aware theta is likewise omitted without a
+curve-roll convention. Those responsibilities require product- and
+desk-specific policies above this generic resolver.

@@ -10,6 +10,9 @@ family for regression testing:
 - `quantlib_heston_v1.json`: analytic Heston values using integration order
   192. Both the Gauss–Laguerre and independent Fang–Oosterlee COS families are
   checked against these committed values.
+- `quantlib_curve_aware_v1.json`: high-resolution finite-difference American
+  values built from independent dated linear-zero funding and carry curves,
+  including negative portions and shaped curves with fixed cash dividends.
 
 The files include the valuation date, day-count convention, engine, and grid
 settings required to interpret the numbers. QuantLib is deliberately not a

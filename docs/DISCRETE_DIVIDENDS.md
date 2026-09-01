@@ -93,8 +93,22 @@ from that contract's resolved schedule.
 The curve forward reports the continuous-carry forward separately from the
 fixed-cash future deduction. Equivalent scalar `q` is derived from the former,
 then the cash schedule is passed explicitly. This prevents double counting.
-For shaped curves, diagnostics report any difference between the curve-based
-cash future deduction and the endpoint-equivalent scalar kernel's deduction.
+On the explicit compatibility path, shaped-curve diagnostics report any
+difference between the curve-based cash future deduction and the
+endpoint-equivalent scalar kernel's deduction.
+
+True curve-aware CRR/PDE use `D(t_i,T)` and `Q(t_i,T)` directly after every
+event. Their boundary deduction at an earlier time `t` is
+
+\[
+D_i D(t,T)\frac{Q(t_i,T)}{D(t_i,T)}.
+\]
+
+Thus shaped event-to-expiry accrual is preserved and the compatibility mismatch
+is eliminated. PDE ex-times are exact time anchors. CRR retains its documented
+nearest-layer timing and piecewise-linear value interpolation; both requested
+and aligned times are reported, and this event treatment can reduce global tree
+convergence to first order.
 
 ## Limitations
 
@@ -126,3 +140,5 @@ dividends. The generator is
 `reports/generate_quantlib_references.py`; QuantLib remains a generator-only
 dependency. Tests also require CRR grid convergence, PDE observed convergence,
 exact event alignment, renewed Rannacher smoothing, and PSOR/penalty agreement.
+`quantlib_curve_aware_v1.json` adds multiple fixed dividends together with
+independently configured shaped funding/carry curves.

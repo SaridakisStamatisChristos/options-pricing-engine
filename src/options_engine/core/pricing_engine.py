@@ -31,6 +31,7 @@ from ..observability.metrics import (
     THREADPOOL_SATURATION,
     THREADPOOL_WORKERS,
 )
+from ..term_structure import DeterministicTermStructure
 from .black_scholes import BlackScholesModel
 from .crr import BinomialModel
 from .finite_difference import FiniteDifferenceModel
@@ -377,6 +378,7 @@ class OptionsEngine:
         volatility: float,
         model: PricingModel,
         seed_sequence: SeedSequence | None,
+        term_structure: DeterministicTermStructure | None = None,
     ) -> str:
         payload: dict[str, Any] = {
             "contract": {
@@ -397,6 +399,9 @@ class OptionsEngine:
             "model_config": self._model_config(model),
             "volatility": float(volatility).hex(),
             "seed": self._seed_identity(seed_sequence),
+            "pricing_context_id": (
+                term_structure.context_id if term_structure is not None else None
+            ),
         }
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -487,6 +492,60 @@ class OptionsEngine:
             self._cache.put(cache_key, payload)
         return payload
 
+    def _run_curve_pricing(
+        self,
+        contract: OptionContract,
+        market_data: MarketData,
+        model_name: str,
+        override_volatility: float | None,
+        term_structure: DeterministicTermStructure,
+    ) -> dict[str, object]:
+        """Run a deterministic model through its true curve-aware entry point."""
+
+        if model_name not in self.models:
+            raise ValueError(f"Unknown model '{model_name}'")
+        model = self.models[model_name]
+        if not isinstance(model, (BlackScholesModel, BinomialModel, FiniteDifferenceModel)):
+            raise ValueError(
+                f"{model_name} does not support true curve-aware pricing; "
+                "use curve_aware=False for endpoint-equivalent compatibility pricing"
+            )
+        volatility = override_volatility
+        if volatility is None:
+            volatility = self.vol_surface.get_volatility(
+                strike=contract.strike_price,
+                maturity=contract.time_to_expiry,
+                spot=market_data.spot_price,
+            )
+        cache_key = self._make_cache_key(
+            contract,
+            market_data,
+            model_name,
+            volatility,
+            model,
+            None,
+            term_structure,
+        )
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            cached["cached"] = True
+            return cached
+
+        start = time.perf_counter()
+        result = model.calculate_price_curve_aware(
+            contract,
+            market_data,
+            volatility,
+            term_structure,
+        )
+        MODEL_LATENCY.labels(model=model_name).observe(time.perf_counter() - start)
+        if result.error:
+            MODEL_ERRORS.labels(model=model_name).inc()
+        payload = self._prepare_result(result, model_name, volatility)
+        payload["cached"] = False
+        self._cache.put(cache_key, payload)
+        return payload
+
     def price_option(
         self,
         contract: OptionContract,
@@ -538,27 +597,75 @@ class OptionsEngine:
         model_name: str = "black_scholes",
         override_volatility: float | None = None,
         seed: int | None = None,
+        *,
+        curve_aware: bool = True,
     ) -> dict[str, object]:
-        """Resolve market conventions, then dispatch through the scalar API.
+        """Resolve market conventions and dispatch through the dated model path.
 
-        Numerical models continue to receive only ``OptionContract`` and
-        ``MarketData``. The returned conventions payload records exactly how
-        dates, curves, settlement, discounting, and the forward were resolved.
+        The default uses original deterministic curves for Black--Scholes,
+        finite difference, and CRR.  ``curve_aware=False`` retains the exact
+        endpoint-equivalent scalar behavior of the original dated API and is
+        the explicit compatibility path for unsupported models.
         """
 
         if not isinstance(contract, DatedOptionContract):
             raise TypeError("contract must be a DatedOptionContract")
         if not isinstance(market_environment, MarketEnvironment):
             raise TypeError("market_environment must be a MarketEnvironment")
-        resolved = market_environment.resolve(contract)
-        result = self.price_option(
-            resolved.contract,
-            resolved.market_data,
-            model_name=model_name,
-            override_volatility=override_volatility,
-            seed=seed,
+        if not isinstance(curve_aware, bool):
+            raise TypeError("curve_aware must be a boolean")
+        if not curve_aware:
+            resolved = market_environment.resolve(contract)
+            result = self.price_option(
+                resolved.contract,
+                resolved.market_data,
+                model_name=model_name,
+                override_volatility=override_volatility,
+                seed=seed,
+            )
+            result["market_conventions"] = resolved.diagnostics()
+            return result
+
+        resolved_curve = market_environment.resolve_curve_aware(contract)
+        self._validate_request_inputs(
+            resolved_curve.contract,
+            resolved_curve.market_data,
+            model_name,
+            override_volatility,
         )
-        result["market_conventions"] = resolved.diagnostics()
+        # Preserve the scalar API's validation semantics even though the
+        # supported curve-aware models are deterministic and do not consume a
+        # random stream.
+        self._request_seed_sequence(seed)
+        model = self.models[model_name]
+        if not isinstance(model, (BlackScholesModel, BinomialModel, FiniteDifferenceModel)):
+            raise ValueError(
+                f"{model_name} does not support true curve-aware pricing; "
+                "use curve_aware=False for endpoint-equivalent compatibility pricing"
+            )
+        deadline = (
+            time.perf_counter() + self.task_timeout_seconds
+            if self.task_timeout_seconds > 0
+            else None
+        )
+        future = self._submit_task(
+            self._run_curve_pricing,
+            resolved_curve.contract,
+            resolved_curve.market_data,
+            model_name,
+            override_volatility,
+            resolved_curve.term_structure,
+            admission_timeout_seconds=(
+                max(0.0, deadline - time.perf_counter()) if deadline is not None else None
+            ),
+        )
+        timeout = max(0.0, deadline - time.perf_counter()) if deadline is not None else None
+        try:
+            result = future.result(timeout=timeout)
+        except TimeoutError as exc:
+            future.cancel()
+            raise RuntimeError("Pricing task timed out") from exc
+        result["market_conventions"] = resolved_curve.diagnostics()
         return result
 
     def price_portfolio(

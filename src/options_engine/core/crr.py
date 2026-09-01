@@ -10,6 +10,7 @@ from typing import ClassVar
 
 import numpy as np
 
+from ..term_structure import DeterministicTermStructure
 from ..utils.validation import validate_discrete_dividends, validate_pricing_parameters
 from .models import ExerciseStyle, MarketData, OptionContract, OptionType, PricingResult
 from .pricing_common import (
@@ -21,6 +22,23 @@ from .pricing_common import (
 )
 
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class _CurveTreeSolution:
+    price: float
+    steps: int
+    delta_t: float
+    first_step_values: np.ndarray | None
+    first_step_prices: np.ndarray | None
+    second_step_values: np.ndarray | None
+    second_step_prices: np.ndarray | None
+    aligned_cash_times: tuple[float, ...]
+    cash_alignment_error: float
+    funding_rates: tuple[float, ...]
+    carry_rates: tuple[float, ...]
+    probabilities: tuple[float, ...]
+    discounts: tuple[float, ...]
 
 
 def binomial_price(
@@ -274,6 +292,411 @@ class BinomialModel:
             )
         except Exception:  # pragma: no cover - preserve context for API error mapping
             LOGGER.exception("Binomial pricing failed")
+            raise
+
+    @staticmethod
+    def _validate_term_structure(
+        contract: OptionContract,
+        market_data: MarketData,
+        term_structure: DeterministicTermStructure,
+    ) -> None:
+        if not isinstance(term_structure, DeterministicTermStructure):
+            raise TypeError("term_structure must be a DeterministicTermStructure")
+        if not math.isclose(
+            term_structure.maturity,
+            contract.time_to_expiry,
+            rel_tol=0.0,
+            abs_tol=1e-14 * max(1.0, contract.time_to_expiry),
+        ):
+            raise ValueError("term-structure maturity must match the option contract")
+        requested_cash_times = tuple(
+            dividend.ex_time for dividend in market_data.cash_dividends.dividends
+        )
+        if len(requested_cash_times) != len(term_structure.cash_dividend_times) or any(
+            not math.isclose(left, right, rel_tol=0.0, abs_tol=1e-14)
+            for left, right in zip(
+                requested_cash_times,
+                term_structure.cash_dividend_times,
+                strict=True,
+            )
+        ):
+            raise ValueError("term-structure cash-dividend anchors must match market_data exactly")
+
+    def _curve_tree_parameters(
+        self,
+        contract: OptionContract,
+        volatility: float,
+        term_structure: DeterministicTermStructure,
+        minimum_steps: int,
+    ) -> tuple[
+        int,
+        float,
+        float,
+        tuple[float, ...],
+        tuple[float, ...],
+        tuple[float, ...],
+        tuple[float, ...],
+    ]:
+        """Build exact per-interval CRR probabilities without clipping."""
+
+        steps = minimum_steps
+        while True:
+            delta_t = contract.time_to_expiry / steps
+            up = math.exp(volatility * math.sqrt(delta_t))
+            down = 1.0 / up
+            denominator = up - down
+            funding_rates: list[float] = []
+            carry_rates: list[float] = []
+            probabilities: list[float] = []
+            discounts: list[float] = []
+            invalid_interval: int | None = None
+            for index in range(steps):
+                start_time = index * delta_t
+                end_time = contract.time_to_expiry if index == steps - 1 else (index + 1) * delta_t
+                funding_rate, carry_rate = term_structure.step_rates(start_time, end_time)
+                discount = term_structure.discount_factor(start_time, end_time)
+                growth = term_structure.growth_factor(start_time, end_time)
+                probability = (growth - down) / denominator
+                funding_rates.append(funding_rate)
+                carry_rates.append(carry_rate)
+                discounts.append(discount)
+                probabilities.append(probability)
+                if not 0.0 < probability < 1.0 and invalid_interval is None:
+                    invalid_interval = index
+            if invalid_interval is None:
+                return (
+                    steps,
+                    delta_t,
+                    up,
+                    tuple(funding_rates),
+                    tuple(carry_rates),
+                    tuple(probabilities),
+                    tuple(discounts),
+                )
+            if steps >= self.MAX_STEPS:
+                probability = probabilities[invalid_interval]
+                raise ValueError(
+                    "curve-aware CRR tree cannot satisfy the no-arbitrage condition "
+                    f"at interval {invalid_interval} with {steps} steps "
+                    f"(p={probability:.17g}); maximum supported resolution reached"
+                )
+            steps = min(self.MAX_STEPS, steps * 2)
+
+    def _curve_cash_boundary_value(
+        self,
+        contract: OptionContract,
+        forward_time: float,
+        term_structure: DeterministicTermStructure,
+    ) -> float:
+        if contract.option_type is OptionType.CALL:
+            return 0.0
+        european = contract.strike_price * term_structure.discount_factor(
+            forward_time, contract.time_to_expiry
+        )
+        if contract.exercise_style is ExerciseStyle.AMERICAN:
+            return max(contract.strike_price, european)
+        return european
+
+    def _curve_tree_solve(
+        self,
+        contract: OptionContract,
+        market_data: MarketData,
+        volatility: float,
+        term_structure: DeterministicTermStructure,
+        *,
+        minimum_steps: int,
+        capture_early_layers: bool,
+    ) -> _CurveTreeSolution:
+        (
+            steps,
+            delta_t,
+            up,
+            funding_rates,
+            carry_rates,
+            probabilities,
+            discounts,
+        ) = self._curve_tree_parameters(
+            contract,
+            volatility,
+            term_structure,
+            minimum_steps,
+        )
+
+        event_amounts: dict[int, float] = {}
+        aligned_times: list[float] = []
+        max_alignment_error = 0.0
+        for dividend in market_data.cash_dividends.dividends:
+            event_index = min(
+                steps - 1,
+                max(1, math.floor(dividend.ex_time / delta_t + 0.5)),
+            )
+            aligned_time = event_index * delta_t
+            event_amounts[event_index] = event_amounts.get(event_index, 0.0) + dividend.amount
+            aligned_times.append(aligned_time)
+            max_alignment_error = max(
+                max_alignment_error,
+                abs(aligned_time - dividend.ex_time),
+            )
+
+        log_up = math.log(up)
+        node_indices = np.arange(steps + 1)
+        log_price_span = volatility * math.sqrt(contract.time_to_expiry * steps)
+        max_terminal_log_price = math.log(market_data.spot_price) + log_price_span
+        min_terminal_log_price = math.log(market_data.spot_price) - log_price_span
+        if max_terminal_log_price > math.log(np.finfo(float).max):
+            raise ValueError(
+                "curve-aware CRR tree exceeds the supported floating-point range; "
+                "reduce volatility, maturity, or steps"
+            )
+        if market_data.cash_dividends and min_terminal_log_price < math.log(np.finfo(float).tiny):
+            raise ValueError(
+                "cash-dividend curve-aware CRR tree enters the subnormal floating-point "
+                "range; increase spot or reduce volatility, maturity, or steps"
+            )
+        prices = np.exp(math.log(market_data.spot_price) + (2 * node_indices - steps) * log_up)
+        if contract.option_type is OptionType.CALL:
+            values = np.maximum(prices - contract.strike_price, 0.0)
+        else:
+            values = np.maximum(contract.strike_price - prices, 0.0)
+
+        first_step_values: np.ndarray | None = None
+        first_step_prices: np.ndarray | None = None
+        second_step_values: np.ndarray | None = None
+        second_step_prices: np.ndarray | None = None
+        for index in range(steps - 1, -1, -1):
+            probability = probabilities[index]
+            values = discounts[index] * (
+                probability * values[1:] + (1.0 - probability) * values[:-1]
+            )
+            prices = prices[:-1] * up
+
+            amount = event_amounts.get(index)
+            if amount is not None:
+                if contract.exercise_style is ExerciseStyle.AMERICAN:
+                    if contract.option_type is OptionType.CALL:
+                        post_event_exercise = np.maximum(prices - contract.strike_price, 0.0)
+                    else:
+                        post_event_exercise = np.maximum(contract.strike_price - prices, 0.0)
+                    values = np.maximum(values, post_event_exercise)
+                targets = np.maximum(prices - amount, 0.0)
+                zero_value = self._curve_cash_boundary_value(
+                    contract,
+                    index * delta_t,
+                    term_structure,
+                )
+                values = np.interp(
+                    targets,
+                    np.concatenate(([0.0], prices)),
+                    np.concatenate(([zero_value], values)),
+                )
+
+            if contract.exercise_style is ExerciseStyle.AMERICAN:
+                if contract.option_type is OptionType.CALL:
+                    exercise_value = np.maximum(prices - contract.strike_price, 0.0)
+                else:
+                    exercise_value = np.maximum(contract.strike_price - prices, 0.0)
+                values = np.maximum(values, exercise_value)
+
+            if capture_early_layers and index == 2:
+                second_step_values = values.copy()
+                second_step_prices = prices.copy()
+            if capture_early_layers and index == 1:
+                first_step_values = values.copy()
+                first_step_prices = prices.copy()
+
+        if not np.isfinite(values).all():
+            raise ValueError("curve-aware CRR tree produced non-finite values")
+        return _CurveTreeSolution(
+            price=float(values[0]),
+            steps=steps,
+            delta_t=delta_t,
+            first_step_values=first_step_values,
+            first_step_prices=first_step_prices,
+            second_step_values=second_step_values,
+            second_step_prices=second_step_prices,
+            aligned_cash_times=tuple(aligned_times),
+            cash_alignment_error=max_alignment_error,
+            funding_rates=funding_rates,
+            carry_rates=carry_rates,
+            probabilities=probabilities,
+            discounts=discounts,
+        )
+
+    def calculate_price_curve_aware(
+        self,
+        contract: OptionContract,
+        market_data: MarketData,
+        volatility: float,
+        term_structure: DeterministicTermStructure,
+    ) -> PricingResult:
+        """Price with exact per-step deterministic funding/carry factors."""
+
+        start = time.perf_counter()
+        try:
+            validate_pricing_parameters(contract, market_data, volatility)
+            validate_discrete_dividends(contract, market_data)
+            self._validate_term_structure(contract, market_data, term_structure)
+            solution = self._curve_tree_solve(
+                contract,
+                market_data,
+                volatility,
+                term_structure,
+                minimum_steps=self.steps,
+                capture_early_layers=True,
+            )
+
+            delta: float | None = None
+            gamma: float | None = None
+            theta: float | None = None
+            if solution.first_step_values is not None and solution.first_step_prices is not None:
+                denominator = solution.first_step_prices[1] - solution.first_step_prices[0]
+                if denominator != 0.0:
+                    delta = float(
+                        (solution.first_step_values[1] - solution.first_step_values[0])
+                        / denominator
+                    )
+            if solution.second_step_values is not None and solution.second_step_prices is not None:
+                down_denominator = solution.second_step_prices[1] - solution.second_step_prices[0]
+                up_denominator = solution.second_step_prices[2] - solution.second_step_prices[1]
+                root_denominator = 0.5 * (
+                    solution.second_step_prices[2] - solution.second_step_prices[0]
+                )
+                if down_denominator and up_denominator and root_denominator:
+                    delta_down = (
+                        solution.second_step_values[1] - solution.second_step_values[0]
+                    ) / down_denominator
+                    delta_up = (
+                        solution.second_step_values[2] - solution.second_step_values[1]
+                    ) / up_denominator
+                    gamma = float((delta_up - delta_down) / root_denominator)
+                theta = float(
+                    (solution.second_step_values[1] - solution.price)
+                    / (2.0 * solution.delta_t)
+                    / 365.0
+                )
+
+            volatility_bump = max(1e-4, volatility * 1e-4)
+            volatility_low = max(1.000001e-6, volatility - volatility_bump)
+            volatility_high = min(5.0, volatility + volatility_bump)
+            low_price = self._curve_tree_solve(
+                contract,
+                market_data,
+                volatility_low,
+                term_structure,
+                minimum_steps=solution.steps,
+                capture_early_layers=False,
+            ).price
+            high_price = self._curve_tree_solve(
+                contract,
+                market_data,
+                volatility_high,
+                term_structure,
+                minimum_steps=solution.steps,
+                capture_early_layers=False,
+            ).price
+            vega = (high_price - low_price) / (volatility_high - volatility_low) / 100.0
+
+            numerical_outputs = (solution.price, delta, gamma, theta, vega)
+            if not all(value is None or math.isfinite(float(value)) for value in numerical_outputs):
+                raise ValueError("curve-aware CRR tree produced a non-finite price or Greek")
+
+            actual_time_mesh_list = [
+                index * solution.delta_t for index in range(solution.steps + 1)
+            ]
+            actual_time_mesh_list[-1] = contract.time_to_expiry
+            actual_time_mesh = tuple(actual_time_mesh_list)
+            alignment_tolerance = 2e-13 * max(1.0, contract.time_to_expiry)
+            curve_node_aligned = all(
+                any(
+                    math.isclose(node, time_value, rel_tol=0.0, abs_tol=alignment_tolerance)
+                    for time_value in actual_time_mesh
+                )
+                for node in term_structure.curve_node_times
+            )
+            cash_aligned = solution.cash_alignment_error <= alignment_tolerance
+            diagnostics = term_structure.diagnostics()
+            diagnostics.update(
+                {
+                    "configured_steps": self.steps,
+                    "effective_steps": solution.steps,
+                    "time_step": solution.delta_t,
+                    "actual_time_mesh": actual_time_mesh,
+                    "effective_step_funding_rates": solution.funding_rates,
+                    "effective_step_carry_rates": solution.carry_rates,
+                    "min_local_funding_rate": min(solution.funding_rates),
+                    "max_local_funding_rate": max(solution.funding_rates),
+                    "min_local_carry_rate": min(solution.carry_rates),
+                    "max_local_carry_rate": max(solution.carry_rates),
+                    "risk_neutral_probabilities": solution.probabilities,
+                    "min_risk_neutral_probability": min(solution.probabilities),
+                    "max_risk_neutral_probability": max(solution.probabilities),
+                    "probability_clipping": False,
+                    "step_discount_factors": solution.discounts,
+                    "curve_node_alignment_status": curve_node_aligned,
+                    "curve_node_alignment_required": False,
+                    "cash_dividend_count": len(market_data.cash_dividends),
+                    "cash_dividend_effective_jump_count": len(set(solution.aligned_cash_times)),
+                    "cash_dividend_jump_model": "limited_liability_spot_jump",
+                    "cash_dividend_interpolation": (
+                        "piecewise_linear" if market_data.cash_dividends else None
+                    ),
+                    "cash_dividend_interpolation_accuracy": (
+                        "event interpolation can reduce global tree convergence to first order"
+                        if market_data.cash_dividends
+                        else None
+                    ),
+                    "cash_dividend_requested_ex_times": tuple(
+                        dividend.ex_time for dividend in market_data.cash_dividends.dividends
+                    ),
+                    "cash_dividend_amounts": tuple(
+                        dividend.amount for dividend in market_data.cash_dividends.dividends
+                    ),
+                    "cash_dividend_aligned_ex_times": solution.aligned_cash_times,
+                    "cash_dividend_max_time_alignment_error": (solution.cash_alignment_error),
+                    "cash_dividend_alignment_status": cash_aligned,
+                    "cash_dividend_event_curve_factors": tuple(
+                        {
+                            "ex_time": dividend.ex_time,
+                            "discount_to_expiry": term_structure.discount_factor(
+                                dividend.ex_time, contract.time_to_expiry
+                            ),
+                            "carry_to_expiry": term_structure.carry_factor(
+                                dividend.ex_time, contract.time_to_expiry
+                            ),
+                            "growth_to_expiry": term_structure.growth_factor(
+                                dividend.ex_time, contract.time_to_expiry
+                            ),
+                        }
+                        for dividend in market_data.cash_dividends.dividends
+                    ),
+                    "cash_dividend_schedule_id": (
+                        market_data.cash_dividends.schedule_id
+                        if market_data.cash_dividends
+                        else None
+                    ),
+                    "vega_method": "central_finite_difference",
+                    "rho_method": "not_reported_without_parallel_curve_bump",
+                }
+            )
+            return PricingResult(
+                contract_id=contract.contract_id,
+                theoretical_price=solution.price,
+                delta=delta,
+                gamma=gamma,
+                theta=theta,
+                vega=float(vega),
+                rho=None,
+                computation_time_ms=(time.perf_counter() - start) * 1000.0,
+                model_used=(
+                    "binomial_curve_aware"
+                    f"{'_cash_dividend' if market_data.cash_dividends else ''}"
+                    f"_{solution.steps}"
+                ),
+                implied_volatility=volatility,
+                numerical_diagnostics=diagnostics,
+            )
+        except Exception:  # pragma: no cover - preserve context for API error mapping
+            LOGGER.exception("Curve-aware binomial pricing failed")
             raise
 
     @staticmethod

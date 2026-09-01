@@ -8,7 +8,8 @@ facade so the 2.0 import surface is not broken by the split.
 | Layer | Main modules | Responsibility |
 | --- | --- | --- |
 | Scalar domain | `core.models` | Numerical contracts, endpoint market scalars, exercise style, and auditable results |
-| Market conventions | `market.dates`, `market.calendars`, `market.curves`, `market.forwards`, `market.environment` | Dated contracts, day counts, explicit holidays/settlement, curves, forwards, and scalar resolution |
+| Market conventions | `market.dates`, `market.calendars`, `market.curves`, `market.forwards`, `market.environment`, `market.pricing_context` | Dated contracts, day counts, explicit holidays/settlement, curves, forwards, endpoint compatibility, and model-time adaptation |
+| Term-structure seam | `term_structure` | Immutable date-free log-factor segments, exact interval ratios, step-equivalent rates, IDs, and event anchors shared by curve-aware kernels |
 | Analytic and lattice | `core.black_scholes`, `core.crr` | Closed-form European pricing and adaptive binomial pricing |
 | Stochastic | `core.monte_carlo`, `core.lsmc`, `core.statistical_inference` | Terminal simulation, stopping policies, variance reduction, and uncertainty |
 | PDE | `core.finite_difference` | Anchored non-uniform Crank–Nicolson/Rannacher valuation, refinement diagnostics, and independent American PSOR/penalty exercise |
@@ -37,8 +38,14 @@ optimizer parameter vector.
   superior.
 - `OptionContract`, `MarketData`, and `OptionsEngine.price_option()` retain the
   scalar-rate API. Dated callers use `DatedOptionContract`, `MarketEnvironment`,
-  and `price_dated_option()`; model implementations receive only resolved
-  scalar inputs.
+  and `price_dated_option()`. Black–Scholes, CRR, and finite differences receive
+  a date-free deterministic factor context by default; `curve_aware=False`
+  preserves endpoint-equivalent dispatch.
+- Date interpolation and curve construction stay in `market`. Numerical models
+  see only positive interval funding/carry factors and exact model-time anchors;
+  they neither bootstrap curves nor query civil dates.
+- True-curve support is fail-closed. Monte Carlo and Longstaff–Schwartz requests
+  are rejected unless the caller explicitly selects endpoint compatibility.
 
 ## State and scale
 

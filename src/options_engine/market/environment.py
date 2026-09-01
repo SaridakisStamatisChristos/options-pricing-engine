@@ -18,6 +18,7 @@ from ..core.models import (
     OptionContract,
     OptionType,
 )
+from ..term_structure import DeterministicTermStructure
 from .calendars import (
     WEEKEND_CALENDAR,
     ZERO_SETTLEMENT_LAG,
@@ -33,6 +34,7 @@ from .dividends import (
     DatedCashDividendSchedule,
 )
 from .forwards import ForwardBuilder, ForwardResult
+from .pricing_context import build_deterministic_term_structure
 
 
 def _strike(value: object) -> float:
@@ -161,6 +163,44 @@ class ResolvedPricingInputs:
                     "cash_dividend_scalar_kernel_future_deduction": model_future_deduction,
                     "cash_dividend_forward_deduction_mismatch": (
                         model_future_deduction - self.forward.cash_dividend_future_value
+                    ),
+                }
+            )
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class CurveAwarePricingInputs:
+    """Dated inputs retaining the original deterministic curve evolution."""
+
+    scalar: ResolvedPricingInputs
+    term_structure: DeterministicTermStructure
+
+    @property
+    def contract(self) -> OptionContract:
+        return self.scalar.contract
+
+    @property
+    def market_data(self) -> MarketData:
+        return self.scalar.market_data
+
+    def diagnostics(self) -> dict[str, object]:
+        payload = self.scalar.diagnostics()
+        payload.update(self.term_structure.diagnostics())
+        payload["rate_representation"] = "deterministic_term_structure"
+        payload["equivalent_rates_role"] = "scalar_compatibility_and_validation_only"
+        if self.market_data.cash_dividends:
+            maturity = self.contract.time_to_expiry
+            curve_aware_future_deduction = sum(
+                dividend.amount * self.term_structure.growth_factor(dividend.ex_time, maturity)
+                for dividend in self.market_data.cash_dividends.dividends
+            )
+            payload.update(
+                {
+                    "cash_dividend_curve_aware_future_deduction": (curve_aware_future_deduction),
+                    "cash_dividend_curve_aware_forward_deduction_mismatch": (
+                        curve_aware_future_deduction
+                        - self.scalar.forward.cash_dividend_future_value
                     ),
                 }
             )
@@ -329,5 +369,30 @@ class MarketEnvironment:
             market_id=self.market_id,
         )
 
+    def resolve_curve_aware(self, contract: DatedOptionContract) -> CurveAwarePricingInputs:
+        """Resolve dates while retaining exact interval funding/carry factors.
 
-__all__ = ["DatedOptionContract", "MarketEnvironment", "ResolvedPricingInputs"]
+        ``resolve()`` remains the endpoint-equivalent compatibility path.  This
+        method additionally builds an immutable model-time factor adapter for
+        numerical models that support true deterministic term structures.
+        """
+
+        scalar = self.resolve(contract)
+        term_structure = build_deterministic_term_structure(
+            discount_curve=self.discount_curve,
+            carry_curve=self.carry_curve,
+            conventions=self.conventions,
+            expiry_date=scalar.forward.expiry_date,
+            cash_dividend_times=tuple(
+                dividend.ex_time for dividend in scalar.market_data.cash_dividends.dividends
+            ),
+        )
+        return CurveAwarePricingInputs(scalar=scalar, term_structure=term_structure)
+
+
+__all__ = [
+    "CurveAwarePricingInputs",
+    "DatedOptionContract",
+    "MarketEnvironment",
+    "ResolvedPricingInputs",
+]

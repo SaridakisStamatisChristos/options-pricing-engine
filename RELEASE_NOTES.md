@@ -1,6 +1,30 @@
 # Release notes
 
-## Unreleased — explicit market conventions
+## Unreleased — true deterministic curve-aware pricing
+
+- Added an immutable model-time term-structure adapter that evaluates exact
+  funding/carry factor ratios and interval-equivalent rates without numerical
+  curve differentiation or expiry flattening.
+- Added true shaped-curve Crank–Nicolson/Rannacher PDE evolution with exact
+  curve/cash anchors, non-uniform and uniform spot grids, independent
+  PSOR/penalty American exercise, actual event-to-expiry cash-dividend factors,
+  convergence evidence, and reproducible local-rate/mesh diagnostics.
+- Added shaped-curve CRR evolution with exact per-step discount/growth factors,
+  strict adaptive no-arbitrage probabilities, no clipping, cash-event
+  interpolation diagnostics, and meaningful delta/gamma/theta/vega reporting.
+- Added exact deterministic-factor European Black–Scholes pricing and put-call
+  parity. Curve-aware theta/rho remain unreported until a curve roll/bump
+  convention is supplied.
+- Dated pricing is curve-aware by default for Black–Scholes, CRR, and finite
+  differences. `curve_aware=False` preserves the endpoint-equivalent dated
+  compatibility path; Monte Carlo and Longstaff–Schwartz true-curve requests
+  fail explicitly.
+- Added committed QuantLib 1.43 shaped-curve fixtures covering upward,
+  downward, negative, non-flat-carry, short/long, deep ITM/OTM,
+  high-volatility, American, and fixed-cash-dividend regimes, plus independent
+  PSOR/penalty/tree convergence and terminal-shape invariants.
+
+### Market-conventions foundation
 
 - Added a typed market layer for civil valuation/expiry dates, five day-count
   conventions, immutable user-supplied business calendars, business-day

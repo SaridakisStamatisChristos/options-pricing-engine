@@ -5,10 +5,12 @@
 The numerical models use continuously compounded risk-free rate `r`, continuous
 dividend yield `q`, time in years, and volatility in annualized decimal units.
 Vanilla payoffs are denominated in the same currency units as spot and strike.
-The separate `options_engine.market` layer resolves typed dates, day counts,
+The separate `options_engine.market` layer owns typed dates, day counts,
 explicit holiday calendars, T+n settlement, funding/discount curves,
-continuous dividend/carry curves, and spot-settlement forwards into equivalent
-scalar `T`, `r`, and `q`. See [Market conventions](MARKET_CONVENTIONS.md).
+continuous dividend/carry curves, and spot-settlement forwards. Dated
+Black–Scholes, CRR, and finite differences consume exact deterministic interval
+factors by default. An explicitly selected endpoint-equivalent scalar path
+remains available. See [Market conventions](MARKET_CONVENTIONS.md).
 
 CRR and finite differences support deterministic discrete cash dividends as
 explicit limited-liability spot jumps. Black–Scholes, terminal MC/QMC, and
@@ -16,8 +18,9 @@ Longstaff–Schwartz reject such schedules rather than converting cash to a
 continuous yield. See [Discrete dividends](DISCRETE_DIVIDENDS.md) for the exact
 economic model, event ordering, limitations, and independent fixtures. The
 core models do not model borrow constraints, transaction costs, exercise fees,
-stochastic rates, or corporate-action uncertainty. Their Greeks retain
-scalar-input semantics; curve-node risk is outside this generic engine.
+stochastic rates, or corporate-action uncertainty. Curve-aware analytic/tree
+rho is not reported without a parallel-curve bump convention; key-rate risk is
+outside this generic engine.
 
 ## European options
 
@@ -34,6 +37,19 @@ Analytic price and Greeks are returned. Theta is calendar-time decay per day,
 so its sign is the negative derivative with respect to remaining maturity.
 American contracts are rejected.
 
+With deterministic curves, the exact formulation substitutes
+`D=D(0,T)` and `Q=Q(0,T)`:
+
+\[
+d_1=\frac{\log(S/K)+\log(Q/D)+\tfrac12\sigma^2T}{\sigma\sqrt{T}},
+\quad C=SQN(d_1)-KDN(d_2).
+\]
+
+The put follows from `C-P=SQ-KD`. This preserves supplied expiry factors and
+put-call parity exactly. Delta, gamma, and vega remain analytic. Curve-aware
+theta and rho are omitted because a dated curve roll/bump has not been
+specified.
+
 ### CRR tree
 
 The Cox–Ross–Rubinstein tree supports European and American exercise. If the
@@ -42,12 +58,28 @@ requested step count until a valid tree is obtained or raises an explicit
 error. It never clips an invalid probability into the interval. The resolved
 step count appears in `model_used`.
 
+For a curve-aware step `[t_i,t_{i+1}]`, `u=exp(sigma*sqrt(dt))`, `d=1/u`, and
+
+\[
+p_i=\frac{Q(t_i,t_{i+1})/D(t_i,t_{i+1})-d}{u-d},\qquad
+V_i=D(t_i,t_{i+1})\,E_i[V_{i+1}].
+\]
+
+Every probability is checked strictly against `(0,1)`. Resolution doubles if
+any interval is invalid and fails at the configured maximum; no probability is
+clipped. Curve nodes need not coincide with uniform tree layers because an
+interval ratio remains exact even when it spans a node. Diagnostics retain the
+full time mesh, per-step rates, discount factors, probabilities, IDs, and node
+alignment status.
+
 With deterministic cash dividends, the tree applies
 `S(t_i+)=max(S(t_i-)-D_i,0)` by piecewise-linear interpolation of the
 post-event value function. Ex-times are snapped to the nearest tree layer and
 the alignment error is reported. Vega then uses a central volatility bump
 because differentiating interpolation weights analytically would not preserve
-the existing vega semantics.
+the existing vega semantics. Event interpolation and ex-time snapping can
+reduce global convergence to first order; requested/aligned times and maximum
+alignment error are reported rather than hidden.
 
 ### Finite-difference PDE
 
@@ -77,6 +109,14 @@ independent solution families:
   set affected by cancellation is accepted only when the independently
   evaluated projected LCP residual also satisfies the parameter-scaled limit.
 
+In true curve-aware mode, each forward-time interval uses
+`r_step=-log(D_step)/dt` and `q_step=-log(Q_step)/dt` directly in the
+Black–Scholes operator. Rannacher half-steps obtain their own factor ratios.
+Funding nodes, carry nodes, settlement-basis breaks, and cash ex-times are
+inserted as exact time-mesh anchors, so no PDE step crosses a piecewise curve
+boundary ambiguously. The shaped curve is never converted back to one expiry
+rate.
+
 At (S=0) and (S=S_{max}), the solver applies the corresponding discounted
 vanilla asymptotes and their American intrinsic maxima. These formulas remain
 valid for continuous dividends and supported negative rates. One-sided delta
@@ -85,15 +125,27 @@ residuals at both boundaries and the risk-neutral lognormal probability beyond
 reviewed domain fixed across separate experiments; it must exceed spot and
 strike.
 
+Curve-aware boundaries use `D(t,T)` and `Q(t,T)`. For a future fixed dividend
+at `t_i`, the high-spot call asymptote subtracts
+
+\[
+D_i\,D(t,T)\frac{Q(t_i,T)}{D(t_i,T)},
+\]
+
+which is the actual event-to-expiry curve accrual, not its endpoint-flat
+approximation. The jump itself remains
+`S(t_i+)=max(S(t_i-)-D_i,0)`; the continuous carry curve is not adjusted for or
+used to duplicate the cash amount.
+
 `refinement_levels` systematically multiplies both spatial and time resolution
 while keeping the same (S_{max}). The returned value is always the direct
-finest-grid solution. For a Rannacher-smoothed European solve, the diagnostics
-may use the formal second order to report a two-grid Richardson error estimate.
-For an American/free-boundary solve, no formal order is assumed: three levels,
-same-sign changes, and a credible observed order are required before an error
-estimate is emitted. Otherwise only raw level prices and differences are
-reported. Richardson extrapolation is diagnostic and never silently replaces
-the published price.
+finest-grid solution. For a scalar Rannacher-smoothed European solve, the
+diagnostics may use the formal second order to report a two-grid Richardson
+error estimate. For curve-aware, cash-jump, or American/free-boundary solves,
+no formal order is assumed: three levels, same-sign changes, and a credible
+observed order are required before an error estimate is emitted. Otherwise
+only raw level prices and differences are reported. Richardson extrapolation
+is diagnostic and never silently replaces the published price.
 
 Cash ex-events are exact backward-time anchors. The solver applies the spot
 jump by interpolation, enforces American exercise on both sides, resets the
@@ -106,6 +158,9 @@ The response retains the v2.1.0 grid, PSOR, bounds, and projection keys and adds
 mesh-spacing extrema, exact-anchor flags, every refinement level and price,
 per-level iteration/LCP residuals, observed order, error estimate, extrapolated
 diagnostic value, boundary residuals, and penalty-specific convergence fields.
+Curve-aware results additionally report curve/context IDs, interval counts,
+the actual substep mesh, full effective step rates, curve/cash alignment,
+event-to-expiry factors, and min/max local funding and carry rates.
 Work is rejected before allocation when the finest requested grid exceeds the
 step or work limits.
 
@@ -121,6 +176,14 @@ Cash-dividend regression evidence additionally uses committed QuantLib 1.43
 events, deep ITM/OTM strikes, short maturity, high volatility, and negative
 rates. Both American PDE solvers and the separately implemented CRR event
 lattice are checked against those fixtures.
+
+`tests/reference/quantlib_curve_aware_v1.json` adds independently configured
+QuantLib linear-zero funding/carry structures. It covers upward/downward and
+partly negative funding, non-flat carry, American calls/puts, short/long and
+deep ITM/OTM/high-volatility cases, and shaped curves with multiple fixed cash
+dividends. Tests require penalty/PSOR agreement, tree convergence, analytic
+European convergence, and the same-terminal/different-American-shape
+regression. QuantLib 1.43 remains generator-only.
 
 ### Terminal Monte Carlo
 
@@ -306,8 +369,9 @@ board.
 
 Committed reference fixtures under `tests/reference` were produced by
 QuantLib 1.43 using analytic European, high-resolution finite-difference
-American, and analytic Heston engines. QuantLib is deliberately not a project
-dependency; fixture regeneration is an explicit reviewed migration.
+American (flat and shaped deterministic curves), cash-dividend spot-jump, and
+analytic Heston engines. QuantLib is deliberately not a project dependency;
+fixture regeneration is an explicit reviewed migration.
 
 ## Reproducibility
 
@@ -333,5 +397,7 @@ Before adopting a release:
    PDE fixtures and additional market-domain cases;
 6. calibrate synthetic SABR/Heston surfaces with known parameters and then use
    held-out strikes/tenors;
-7. validate day-count, dividend, settlement, and quote conventions outside this
+7. verify shaped curves with identical terminal factors agree for European
+   terminal claims but can differ for American exercise;
+8. validate day-count, dividend, settlement, and quote conventions outside this
    generic engine.

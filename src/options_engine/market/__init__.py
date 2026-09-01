@@ -24,7 +24,12 @@ from .curves import (
 )
 from .dates import DayCountConvention, ExDividendDate, ExpiryDate, ValuationDate
 from .dividends import DatedCashDividend, DatedCashDividendSchedule
-from .environment import DatedOptionContract, MarketEnvironment, ResolvedPricingInputs
+from .environment import (
+    CurveAwarePricingInputs,
+    DatedOptionContract,
+    MarketEnvironment,
+    ResolvedPricingInputs,
+)
 from .forwards import ForwardBuilder, ForwardResult
 
 __all__ = [
@@ -36,6 +41,7 @@ __all__ = [
     "CarryCurve",
     "ContinuousDividendCurve",
     "ContinuousZeroCurve",
+    "CurveAwarePricingInputs",
     "DatedCashDividend",
     "DatedCashDividendSchedule",
     "DatedOptionContract",
