@@ -29,6 +29,14 @@ decision or production risk process.
 | Greeks | Analytic Black–Scholes; tree/finite-difference CRR; pathwise and likelihood-ratio Monte Carlo estimators with fallbacks | Monte Carlo Greeks include estimator metadata |
 | Market conventions | Typed dates/day counts/ex-dates, explicit holiday calendars and settlement, continuous zero/discount/dividend curves, exact interval-factor adapters, deterministic cash-dividend schedules, auditable forwards | No inferred exchange holidays, curve bootstrapping, entitlement inference, or stochastic dividends |
 | Smile calibration | SABR; Heston with independent Gauss–Laguerre/COS pricing and optional per-tenor or globally shared parameters | Weighting and deterministic strike/tenor holdouts are explicit; both Heston modes report Feller, bound-proximity, and optimizer diagnostics |
+
+Calibration is an estimate, not proof that a model is valid.  The calibration
+package exposes a shared, JSON-safe validation vocabulary for observation-level
+residuals, deterministic centre/wing/interleaved/fractional holdouts, weight
+concentration, optimizer-start sensitivity, parameter-bound proximity and local
+Jacobian conditioning.  Conditioning describes a local numerical approximation;
+it is **not** a statistical parameter confidence interval.  Inspect holdout and
+maximum wing errors rather than relying on training RMSE alone.
 | Volatility surfaces | Raw-SVI slice diagnostics; global power-law SSVI with monotone ATM variance; strike, parity, convexity, and calendar checks | SSVI enforces sufficient wing/curvature constraints and validates density on a dense grid |
 | Service controls | OIDC/JWKS authentication, scopes, bounded bodies, rate limits, back-pressure, metrics, replay capsules | Rate-limit/idempotency/replay state is process-local; run one worker per container |
 
@@ -276,6 +284,7 @@ gh attestation verify options_pricing_engine-*.tar.gz --repo SaridakisStamatisCh
 ## Project docs
 
 - [Numerical methods and validation](docs/NUMERICAL_METHODS.md)
+- [Calibration validation and model selection](docs/CALIBRATION_VALIDATION.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Operations runbook](OPERATIONS.md)
 - [Security policy](SECURITY.md)

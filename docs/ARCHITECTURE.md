@@ -1,8 +1,12 @@
 # Architecture
 
 The package keeps financial contracts and result types separate from numerical
-algorithms, calibration, API transport, and operational controls. Public model
-classes live in focused modules; `core.pricing_models` remains a compatibility
+algorithms, calibration, API transport, and operational controls.
+
+Calibration model-risk evidence is represented in `calib.validation` using
+immutable scalar/tuple records shared by SABR, Heston and S(SVI) where the
+concepts genuinely coincide. Model-specific admissibility remains with each
+calibrator rather than being hidden behind a false universal model abstraction. Public model classes live in focused modules; `core.pricing_models` remains a compatibility
 facade so the 2.0 import surface is not broken by the split.
 
 | Layer | Main modules | Responsibility |
@@ -48,6 +52,11 @@ optimizer parameter vector.
   are rejected unless the caller explicitly selects endpoint compatibility.
 
 ## State and scale
+
+Deterministic synthetic and adversarial calibration boards live in
+`calib.datasets`; they are small runtime generators rather than committed bulk
+market data. Evidence rendering is isolated under `reports/`, so optional plotting
+never becomes a core pricing dependency.
 
 Pricing workers are thread-bounded within a process. Rate limits, idempotency,
 replay capsules, and result caches are also process-local, so a deployment uses

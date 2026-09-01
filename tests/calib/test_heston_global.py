@@ -107,6 +107,16 @@ def test_global_calibration_recovers_one_parameter_set_across_maturities(
     assert all(0.0 <= value <= 1.0 for value in detailed.parameter_bound_proximity.values())
     assert all(result.params == detailed.shared_params for result in detailed.tenor_results)
     assert all(result.calibration_mode == "global" for result in detailed.tenor_results)
+    assert (
+        len(detailed.residuals) == detailed.calibration_observations + detailed.holdout_observations
+    )
+    assert detailed.residual_summary is not None
+    assert detailed.residual_summary.maximum_absolute_residual < 1e-6
+    assert detailed.weight_diagnostics is not None
+    assert detailed.initialization_sensitivity[0].attempts
+    assert detailed.conditioning[0].effective_rank <= 5
+    assert detailed.fit_quality in {"good", "acceptable", "unstable"}
+    assert detailed.to_dict()["residuals"]
 
 
 def test_global_calibration_can_hold_out_an_entire_tenor(coherent_board: CleanBoard) -> None:
@@ -127,6 +137,11 @@ def test_global_calibration_can_hold_out_an_entire_tenor(coherent_board: CleanBo
     assert held_out.holdout_observations == len(held_out.strikes)
     assert held_out.holdout_rmse is not None and held_out.holdout_rmse < 1e-6
     assert detailed.holdout_rmse is not None and detailed.holdout_rmse < 1e-6
+    assert detailed.tenor_holdout_rmse == pytest.approx(detailed.holdout_rmse)
+    assert detailed.strike_holdout_rmse is None
+    assert held_out.residual_summary is not None
+    assert held_out.residual_summary.calibration_observations == 0
+    assert all(observation.is_holdout for observation in held_out.residuals)
 
 
 def test_compare_modes_reports_tradeoffs_without_automatic_ranking(
@@ -289,3 +304,19 @@ def test_observation_weighting_counts_only_training_quotes() -> None:
 
     assert np.sum(adjusted[0][~first_holdout]) == pytest.approx(3.0)
     assert np.sum(adjusted[1][~second_holdout]) == pytest.approx(5.0)
+
+
+@pytest.mark.parametrize("policy", ["alternating", "wings", "centre", "fractional"])
+def test_heston_strike_holdout_policies_are_deterministic_and_identified(policy: str) -> None:
+    strikes = np.linspace(70.0, 130.0, 13)
+    calibrator = HestonCalibrator(
+        HestonConfig(holdout_policy=policy, holdout_fraction=0.25, min_strikes=7)
+    )
+    first = calibrator._holdout_mask(strikes, centre=100.0)
+    second = calibrator._holdout_mask(strikes, centre=100.0)
+
+    assert np.array_equal(first, second)
+    assert np.any(first)
+    assert np.count_nonzero(~first) >= 7
+    if policy == "centre":
+        assert first[int(np.argmin(np.abs(strikes - 100.0)))]

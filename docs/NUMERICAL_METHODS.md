@@ -259,6 +259,31 @@ separate flags identify point and interval projection.
 
 ## Volatility calibration
 
+### Calibration validation and model risk
+
+All audit diagnostics are deterministic and serializable without exposing SciPy
+objects.  Residual records retain tenor, strike/log-moneyness, market and fitted
+volatility, weighted residual and calibration/holdout membership.  Summaries
+include training and holdout RMSE, weighted RMSE, MAE, bias, dispersion,
+percentiles and the maximum absolute error so a wing miss cannot disappear in an
+average.  Holdouts are selected after stable strike sorting and never leave fewer
+than the model's minimum training observations.
+
+Multi-start objective and parameter spreads diagnose initialization sensitivity.
+The singular values, effective rank, condition number and approximate local
+correlation derived from a least-squares Jacobian diagnose numerical
+identifiability only; they are not confidence intervals.  A low training RMSE can
+therefore still be classified poor or unstable due to extrapolation error, bound
+saturation, ambiguous starts or rank deficiency.
+
+Per-tenor Heston permits parameters to change with maturity and must be reviewed
+for cross-tenor instability.  Global Heston imposes one coherent process but is
+not automatically superior; strike and whole-tenor holdouts answer different
+questions and `compare_modes()` deliberately reports evidence without a winner.
+Raw SVI remains a slice diagnostic: butterfly failure makes the slice invalid
+regardless of RMSE.  SSVI additionally applies explicit global sufficient
+constraints and dense calendar/density validation.
+
 ### SABR
 
 SABR calibration fits a smile per tenor using Hagan's approximation with

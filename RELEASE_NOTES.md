@@ -1,5 +1,21 @@
 # Release notes
 
+## Unreleased — Step 11 calibration validation
+
+- Added deterministic strike holdout policies and JSON-safe residual, weighting,
+  initialization-sensitivity and local-conditioning diagnostics.
+- SABR tenor results now retain every optimizer attempt, training/holdout
+  residual evidence, economic bound proximity, warnings and conservative fit
+  quality while preserving the historical `calibrate()` return shape.
+- Documented why training fit, numerical conditioning, admissibility and model
+  validity are separate claims, including global/per-tenor Heston and raw
+  SVI/SSVI distinctions.
+- Added deterministic known-parameter SABR, cross-family Heston and arbitrage-free
+  SSVI recovery boards, plus named sparse, clustered, noisy-wing, outlier, spread,
+  flat-smile, steep-skew and calendar-inconsistent adversarial boards.
+- Added a dependency-free JSON/Markdown evidence generator and a model-selection
+  guide distinguishing fit, admissibility, conditioning and parameter confidence.
+
 ## Unreleased — true deterministic curve-aware pricing
 
 - Added an immutable model-time term-structure adapter that evaluates exact
