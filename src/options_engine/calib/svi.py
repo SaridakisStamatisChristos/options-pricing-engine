@@ -12,8 +12,9 @@ from __future__ import annotations
 import itertools
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from numbers import Integral, Real
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -21,6 +22,23 @@ from numpy.typing import ArrayLike, NDArray
 from scipy.optimize import least_squares
 
 from .boards import CleanBoard
+from .validation import (
+    CalibrationError,
+    CalibrationFailureReason,
+    ConditioningDiagnostics,
+    FitQuality,
+    HoldoutPolicy,
+    InitializationSensitivity,
+    OptimizerAttempt,
+    ResidualObservation,
+    ResidualSummary,
+    WeightDiagnostics,
+    analyze_initialization_sensitivity,
+    conditioning_from_jacobian,
+    deterministic_holdout_mask,
+    residual_diagnostics,
+    serializable,
+)
 
 
 def _finite_real(name: str, value: object) -> float:
@@ -92,6 +110,12 @@ class SVIDiagnostics:
     minimum_density_factor: float
     maximum_wing_slope: float
     butterfly_free: bool
+    left_wing_slope: float = math.nan
+    right_wing_slope: float = math.nan
+    butterfly_violation_count: int = 0
+    admissible: bool = False
+    fit_quality: FitQuality = FitQuality.INVALID
+    parameter_bound_proximity: dict[str, float] = field(default_factory=dict)
 
 
 def raw_svi_total_variance(log_moneyness: ArrayLike, params: SVIParameters) -> np.ndarray:
@@ -159,7 +183,263 @@ def validate_svi_slice(
         minimum_density_factor=minimum_density,
         maximum_wing_slope=wing_slope,
         butterfly_free=minimum_variance >= 0.0 and minimum_density >= -1e-10,
+        left_wing_slope=params.b * (1.0 - params.rho),
+        right_wing_slope=params.b * (1.0 + params.rho),
+        butterfly_violation_count=int(np.sum(density < -1e-10)),
+        admissible=minimum_variance >= 0.0 and minimum_density >= -1e-10,
+        fit_quality=(
+            FitQuality.GOOD
+            if minimum_variance >= 0.0 and minimum_density >= -1e-10
+            else FitQuality.INVALID
+        ),
+        parameter_bound_proximity={
+            "rho": float(1.0 - abs(params.rho)),
+            "lee_left": float(2.0 - params.b * (1.0 - params.rho)),
+            "lee_right": float(2.0 - params.b * (1.0 + params.rho)),
+            "sigma": float(params.sigma),
+            "minimum_variance": minimum_variance,
+        },
     )
+
+
+@dataclass(frozen=True, slots=True)
+class RawSVIConfig:
+    """Deterministic audit configuration for a single raw-SVI slice."""
+
+    seeds: tuple[int, ...] = (0, 1, 2, 3)
+    holdout_policy: HoldoutPolicy | str = HoldoutPolicy.NONE
+    holdout_fraction: float = 0.2
+    max_iterations: int = 2_000
+    tolerance: float = 1e-10
+    validation_range: float = 5.0
+    validation_points: int = 2_001
+
+    def __post_init__(self) -> None:
+        if (
+            not self.seeds
+            or len(self.seeds) > 32
+            or any(
+                isinstance(seed, bool)
+                or not isinstance(seed, Integral)
+                or not 0 <= seed <= 2**128 - 1
+                for seed in self.seeds
+            )
+        ):
+            raise ValueError("seeds must contain between 1 and 32 non-negative integers")
+        if len(set(self.seeds)) != len(self.seeds):
+            raise ValueError("seeds must not contain duplicates")
+        object.__setattr__(self, "seeds", tuple(int(seed) for seed in self.seeds))
+        object.__setattr__(self, "holdout_policy", HoldoutPolicy(self.holdout_policy))
+        if (
+            isinstance(self.holdout_fraction, bool)
+            or not isinstance(self.holdout_fraction, Real)
+            or not math.isfinite(self.holdout_fraction)
+            or not 0.0 <= self.holdout_fraction <= 0.5
+        ):
+            raise ValueError("holdout_fraction must be in [0, 0.5]")
+        if (
+            isinstance(self.max_iterations, bool)
+            or not isinstance(self.max_iterations, Integral)
+            or not 1 <= self.max_iterations <= 100_000
+        ):
+            raise ValueError("max_iterations must be positive")
+        if not math.isfinite(self.tolerance) or self.tolerance <= 0.0:
+            raise ValueError("tolerance must be finite and positive")
+        if (
+            self.validation_range <= 0.0
+            or self.validation_points < 101
+            or self.validation_points % 2 == 0
+        ):
+            raise ValueError("validation grid must have a positive range and an odd count >= 101")
+
+
+@dataclass(frozen=True, slots=True)
+class RawSVICalibrationResult:
+    """Auditable result for an independently fitted raw-SVI slice."""
+
+    parameters: SVIParameters
+    diagnostics: SVIDiagnostics
+    residuals: tuple[ResidualObservation, ...]
+    residual_summary: ResidualSummary
+    weight_diagnostics: WeightDiagnostics
+    initialization_sensitivity: InitializationSensitivity
+    conditioning: ConditioningDiagnostics
+    parameter_bound_proximity: dict[str, float]
+    fit_quality: FitQuality
+    numerical_warnings: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return cast(dict[str, object], serializable(self))
+
+
+class RawSVICalibrator:
+    """Fit one raw-SVI total-variance slice and retain full audit evidence.
+
+    Raw SVI is deliberately not presented as a globally arbitrage-safe surface.
+    A dense-grid butterfly failure always classifies the result as ``invalid``.
+    """
+
+    def __init__(self, config: RawSVIConfig | None = None) -> None:
+        self._config = RawSVIConfig() if config is None else config
+        if not isinstance(self._config, RawSVIConfig):
+            raise TypeError("config must be RawSVIConfig")
+
+    def calibrate(
+        self,
+        log_moneyness: ArrayLike,
+        total_variance: ArrayLike,
+        *,
+        tenor: float = 1.0,
+        forward: float = 1.0,
+        weights: ArrayLike | None = None,
+    ) -> RawSVICalibrationResult:
+        k = _one_dimensional_finite("log_moneyness", log_moneyness)
+        market = _one_dimensional_finite("total_variance", total_variance)
+        tenor_value = _finite_real("tenor", tenor)
+        forward_value = _finite_real("forward", forward)
+        if k.shape != market.shape or np.any(market <= 0.0):
+            raise ValueError("log_moneyness and positive total_variance must have matching shapes")
+        if tenor_value <= 0.0 or forward_value <= 0.0:
+            raise ValueError("tenor and forward must be positive")
+        if k.size < 6:
+            raise ValueError("raw SVI requires at least six observations")
+        weight = np.ones(k.size) if weights is None else _one_dimensional_finite("weights", weights)
+        if weight.shape != k.shape or np.any(weight <= 0.0):
+            raise ValueError("weights must be finite, positive, and match observations")
+        weight = weight / np.mean(weight)
+        held = deterministic_holdout_mask(
+            k,
+            self._config.holdout_policy,
+            fraction=self._config.holdout_fraction,
+            minimum_training=5,
+            centre=0.0,
+        )
+        training = ~held
+        lower = np.array([-2.0, 1e-8, -0.999, -5.0, 1e-5])
+        upper = np.array([2.0, 2.0, 0.999, 5.0, 5.0])
+
+        def values(x: np.ndarray, points: np.ndarray) -> np.ndarray:
+            a, b, rho, m, sigma = x
+            return np.asarray(
+                a + b * (rho * (points - m) + np.sqrt((points - m) ** 2 + sigma**2)),
+                dtype=float,
+            )
+
+        def objective(x: np.ndarray) -> np.ndarray:
+            fitted = values(x, k[training])
+            minimum = x[0] + x[1] * x[4] * math.sqrt(max(0.0, 1.0 - x[2] ** 2))
+            lee = x[1] * (1.0 + abs(x[2]))
+            penalty = np.array([max(0.0, -minimum) * 1e3, max(0.0, lee - 2.0) * 1e3])
+            return np.concatenate(
+                ((fitted - market[training]) * np.sqrt(weight[training]), penalty)
+            )
+
+        attempts: list[OptimizerAttempt] = []
+        results = []
+        base = np.array([max(float(np.min(market)) * 0.5, 1e-5), 0.1, -0.2, 0.0, 0.2])
+        for seed in self._config.seeds:
+            rng = np.random.default_rng(seed)
+            initial = base.copy()
+            if seed != self._config.seeds[0]:
+                initial = np.clip(initial * rng.lognormal(0.0, 0.35, 5), lower + 1e-9, upper - 1e-9)
+                initial[2] = float(np.clip(-0.2 + rng.normal(0.0, 0.35), -0.9, 0.9))
+                initial[3] = float(np.clip(rng.normal(0.0, 0.25), -1.0, 1.0))
+            result = least_squares(
+                objective,
+                initial,
+                bounds=(lower, upper),
+                max_nfev=self._config.max_iterations,
+                xtol=self._config.tolerance,
+                ftol=self._config.tolerance,
+                gtol=self._config.tolerance,
+            )
+            params_tuple = tuple(float(v) for v in result.x)
+            valid = result.success and objective(result.x)[-2:].max() <= 1e-8
+            attempts.append(
+                OptimizerAttempt(
+                    seed,
+                    tuple(float(v) for v in initial),
+                    bool(valid),
+                    int(result.status),
+                    str(result.message),
+                    float(np.mean(objective(result.x) ** 2)),
+                    params_tuple,
+                    int(result.nfev),
+                )
+            )
+            if valid:
+                results.append(result)
+        if not results:
+            raise CalibrationError(
+                CalibrationFailureReason.ADMISSIBILITY_FAILED,
+                "all raw SVI optimization starts failed admissibility",
+            )
+        best = min(results, key=lambda item: float(np.mean(objective(item.x) ** 2)))
+        params = SVIParameters(*(float(v) for v in best.x))
+        fitted_variance = raw_svi_total_variance(k, params)
+        market_vol = np.sqrt(market / tenor_value)
+        fitted_vol = np.sqrt(np.maximum(fitted_variance, 0.0) / tenor_value)
+        strikes = forward_value * np.exp(k)
+        rows, summary, weight_diag = residual_diagnostics(
+            tenors=np.full(k.size, tenor_value),
+            strikes=strikes,
+            forwards=np.full(k.size, forward_value),
+            market=market_vol,
+            fitted=fitted_vol,
+            weights=weight,
+            holdout=held,
+        )
+        grid = np.linspace(
+            -self._config.validation_range,
+            self._config.validation_range,
+            self._config.validation_points,
+        )
+        diagnostics = validate_svi_slice(params, log_moneyness=grid)
+        sensitivity = analyze_initialization_sensitivity(attempts)
+        conditioning = conditioning_from_jacobian(best.jac[:-2])
+        proximity = dict(diagnostics.parameter_bound_proximity)
+        proximity.update(
+            {
+                "a_lower": float(params.a - lower[0]),
+                "a_upper": float(upper[0] - params.a),
+                "b_lower": float(params.b - lower[1]),
+                "b_upper": float(upper[1] - params.b),
+                "m_lower": float(params.m - lower[3]),
+                "m_upper": float(upper[3] - params.m),
+                "sigma_upper": float(upper[4] - params.sigma),
+            }
+        )
+        warnings: list[str] = []
+        if not diagnostics.admissible:
+            warnings.append("dense-grid butterfly arbitrage detected; raw SVI slice is invalid")
+        if conditioning.weakly_identified:
+            warnings.append("local Jacobian indicates weak parameter identification")
+        if sensitivity.classification != "stable":
+            warnings.append(f"initialization sensitivity is {sensitivity.classification}")
+        quality = (
+            FitQuality.INVALID
+            if not diagnostics.admissible
+            else FitQuality.UNSTABLE
+            if conditioning.weakly_identified or sensitivity.classification != "stable"
+            else FitQuality.POOR
+            if summary.holdout_rmse is not None
+            and summary.holdout_rmse > max(0.02, 2.0 * summary.rmse)
+            else FitQuality.GOOD
+            if summary.rmse < 0.005
+            else FitQuality.ACCEPTABLE
+        )
+        return RawSVICalibrationResult(
+            params,
+            diagnostics,
+            rows,
+            summary,
+            weight_diag,
+            sensitivity,
+            conditioning,
+            proximity,
+            quality,
+            tuple(warnings),
+        )
 
 
 def ssvi_total_variance(
@@ -259,6 +539,8 @@ class SSVIConfig:
     weighting: str = "auto"
     spread_floor: float = 1e-4
     validation_points: int = 1_001
+    holdout_policy: HoldoutPolicy | str = HoldoutPolicy.NONE
+    holdout_fraction: float = 0.2
 
     def __post_init__(self) -> None:
         if not self.seeds or len(self.seeds) > 32:
@@ -302,6 +584,14 @@ class SSVIConfig:
         if not 1e-8 <= spread_floor <= 1.0:
             raise ValueError("spread_floor must be within [1e-8, 1]")
         object.__setattr__(self, "spread_floor", spread_floor)
+        try:
+            object.__setattr__(self, "holdout_policy", HoldoutPolicy(self.holdout_policy))
+        except ValueError as exc:
+            raise ValueError(f"unsupported holdout policy: {self.holdout_policy!r}") from exc
+        fraction = _finite_real("holdout_fraction", self.holdout_fraction)
+        if not 0.0 <= fraction <= 0.5:
+            raise ValueError("holdout_fraction must be within [0, 0.5]")
+        object.__setattr__(self, "holdout_fraction", fraction)
 
 
 @dataclass(frozen=True, slots=True)
@@ -397,18 +687,27 @@ class SSVICalibrationResult:
     maximum_wing_slope: float
     atm_projection_applied: bool
     observations: int
+    calibration_observations: int = 0
+    holdout_observations: int = 0
+    holdout_rmse: float | None = None
+    residuals: tuple[ResidualObservation, ...] = ()
+    residual_summary: ResidualSummary | None = None
+    weight_diagnostics: WeightDiagnostics | None = None
+    initialization_sensitivity: InitializationSensitivity | None = None
+    wing_constraint_slack: float = math.nan
+    curvature_constraint_slack: float = math.nan
+    parameter_bound_proximity: dict[str, float] = field(default_factory=dict)
+    atm_projection_absolute_adjustment: float = 0.0
+    atm_projection_relative_adjustment: float = 0.0
+    largest_atm_projection_tenor: float | None = None
+    total_weighted_projection_error: float = 0.0
+    atm_projection_adjustments: tuple[tuple[float, float, float], ...] = ()
+    interpolation_status: str = "unknown"
+    fit_quality: FitQuality = FitQuality.ACCEPTABLE
+    numerical_warnings: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
-        return {
-            "surface": self.surface.to_dict(),
-            "rmse": self.rmse,
-            "weighted_rmse": self.weighted_rmse,
-            "minimum_density_factor": self.minimum_density_factor,
-            "maximum_calendar_decrease": self.maximum_calendar_decrease,
-            "maximum_wing_slope": self.maximum_wing_slope,
-            "atm_projection_applied": self.atm_projection_applied,
-            "observations": self.observations,
-        }
+        return cast(dict[str, object], serializable(self))
 
 
 class SSVICalibrator:
@@ -449,7 +748,17 @@ class SSVICalibrator:
         self,
         clean_board: CleanBoard,
         forward_curve: Mapping[float, float] | None,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, bool]:
+    ) -> tuple[
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+    ]:
         data = clean_board.quotes
         required = {"tenor", "strike", "mid_iv", "forward"}
         missing = required - set(data.columns)
@@ -515,7 +824,6 @@ class SSVICalibrator:
         raw_theta = np.asarray(theta_raw, dtype=float)
         theta = _isotonic_non_decreasing(raw_theta, np.asarray(theta_weights, dtype=float))
         theta = np.maximum(theta, 1e-12)
-        projected = not np.allclose(theta, raw_theta, rtol=0.0, atol=1e-14)
         theta_lookup = dict(zip(tenors, theta, strict=True))
 
         row_tenors = collapsed["tenor"].to_numpy(dtype=float)
@@ -546,7 +854,27 @@ class SSVICalibrator:
         else:
             weights = np.ones_like(market_vols)
         weights /= float(np.mean(weights))
-        return row_tenors, log_moneyness, market_vols, row_theta, weights, projected
+        holdout = np.zeros(market_vols.size, dtype=bool)
+        for tenor in tenors:
+            indices = np.flatnonzero(np.isclose(row_tenors, tenor, rtol=0.0, atol=1e-12))
+            holdout[indices] = deterministic_holdout_mask(
+                log_moneyness[indices],
+                self._config.holdout_policy,
+                fraction=self._config.holdout_fraction,
+                minimum_training=self._config.min_strikes_per_tenor,
+                centre=0.0,
+            )
+        return (
+            row_tenors,
+            strikes,
+            forwards,
+            log_moneyness,
+            market_vols,
+            row_theta,
+            weights,
+            holdout,
+            np.column_stack((raw_theta, theta, np.asarray(theta_weights, dtype=float))),
+        )
 
     @staticmethod
     def _unpack(raw: NDArray[np.float64]) -> tuple[float, float, float]:
@@ -576,10 +904,18 @@ class SSVICalibrator:
             raise TypeError("clean_board must be a CleanBoard")
         if forward_curve is not None and not isinstance(forward_curve, Mapping):
             raise TypeError("forward_curve must be a mapping or None")
-        row_tenors, log_moneyness, market_vols, row_theta, weights, projected = self._prepare(
-            clean_board,
-            forward_curve,
-        )
+        (
+            row_tenors,
+            strikes,
+            forwards,
+            log_moneyness,
+            market_vols,
+            row_theta,
+            weights,
+            holdout,
+            projection,
+        ) = self._prepare(clean_board, forward_curve)
+        projected = not np.allclose(projection[:, 0], projection[:, 1], rtol=0.0, atol=1e-14)
         unique_tenors, first_indices = np.unique(row_tenors, return_index=True)
         theta = row_theta[first_indices]
 
@@ -597,7 +933,10 @@ class SSVICalibrator:
 
         def objective(raw: NDArray[np.float64]) -> NDArray[np.float64]:
             rho, eta, power = self._unpack(raw)
-            residuals = np.sqrt(weights) * (model_vols(raw) - market_vols)
+            training = ~holdout
+            residuals = np.sqrt(weights[training]) * (
+                model_vols(raw)[training] - market_vols[training]
+            )
             wing, curvature = self._shape_constraints(theta, rho, eta, power)
             penalties = np.concatenate(
                 (
@@ -612,6 +951,7 @@ class SSVICalibrator:
         upper = np.array([3.8, math.log(100.0), 8.0], dtype=float)
         best_raw: np.ndarray | None = None
         best_weighted_rmse = float("inf")
+        attempts: list[OptimizerAttempt] = []
         for seed in self._config.seeds:
             start = initial.copy()
             if seed:
@@ -626,6 +966,25 @@ class SSVICalibrator:
                 gtol=self._config.tolerance,
                 max_nfev=self._config.max_iterations,
             )
+            fitted_parameters = (
+                self._unpack(np.asarray(fit.x, dtype=float)) if np.all(np.isfinite(fit.x)) else None
+            )
+            attempts.append(
+                OptimizerAttempt(
+                    seed=int(seed),
+                    initial_parameters=tuple(float(value) for value in self._unpack(start)),
+                    success=bool(fit.success and fitted_parameters is not None),
+                    status=int(fit.status),
+                    message=str(fit.message),
+                    objective=(float(2.0 * fit.cost) if math.isfinite(float(fit.cost)) else None),
+                    parameters=(
+                        tuple(float(value) for value in fitted_parameters)
+                        if fitted_parameters is not None
+                        else None
+                    ),
+                    evaluations=int(fit.nfev),
+                )
+            )
             if not fit.success or not np.all(np.isfinite(fit.x)):
                 continue
             fitted_rho, fitted_eta, fitted_power = self._unpack(np.asarray(fit.x, dtype=float))
@@ -639,13 +998,20 @@ class SSVICalibrator:
                 continue
             fitted_vols = model_vols(np.asarray(fit.x, dtype=float))
             weighted_rmse = float(
-                np.sqrt(np.average((fitted_vols - market_vols) ** 2, weights=weights))
+                np.sqrt(
+                    np.average(
+                        (fitted_vols[~holdout] - market_vols[~holdout]) ** 2,
+                        weights=weights[~holdout],
+                    )
+                )
             )
             if math.isfinite(weighted_rmse) and weighted_rmse < best_weighted_rmse:
                 best_weighted_rmse = weighted_rmse
                 best_raw = np.asarray(fit.x, dtype=float)
         if best_raw is None:
-            raise RuntimeError("SSVI calibration failed")
+            raise CalibrationError(
+                CalibrationFailureReason.OPTIMIZER_FAILED, "SSVI calibration failed"
+            )
 
         rho, eta, power = self._unpack(best_raw)
         surface = SSVISurface(
@@ -656,7 +1022,16 @@ class SSVICalibrator:
             power=power,
         )
         fitted_vols = model_vols(best_raw)
-        rmse = float(np.sqrt(np.mean((fitted_vols - market_vols) ** 2)))
+        residuals, residual_summary, weight_diagnostics = residual_diagnostics(
+            tenors=row_tenors,
+            strikes=strikes,
+            forwards=forwards,
+            market=market_vols,
+            fitted=fitted_vols,
+            weights=weights,
+            holdout=holdout,
+        )
+        rmse = residual_summary.rmse
 
         k_min = min(float(np.min(log_moneyness)) - 1.0, -2.0)
         k_max = max(float(np.max(log_moneyness)) + 1.0, 2.0)
@@ -694,7 +1069,60 @@ class SSVICalibrator:
             or float(np.max(wing_constraint)) > 4.0 + 1e-8
             or float(np.max(curvature_constraint)) > 4.0 + 1e-8
         ):
-            raise RuntimeError("SSVI calibration failed static-arbitrage validation")
+            raise CalibrationError(
+                CalibrationFailureReason.ARBITRAGE_VIOLATION,
+                "SSVI calibration failed static-arbitrage validation",
+            )
+
+        sensitivity = analyze_initialization_sensitivity(attempts)
+        wing_slack = float(4.0 - np.max(wing_constraint))
+        curvature_slack = float(4.0 - np.max(curvature_constraint))
+        adjustments = projection[:, 1] - projection[:, 0]
+        absolute_adjustment = float(np.max(np.abs(adjustments)))
+        relative_adjustment = float(
+            np.max(np.abs(adjustments) / np.maximum(np.abs(projection[:, 0]), 1e-12))
+        )
+        largest_index = int(np.argmax(np.abs(adjustments)))
+        weighted_projection_error = float(np.sum(projection[:, 2] * adjustments**2))
+        proximity = {
+            "rho": float(1.0 - abs(rho)),
+            "eta_lower": float(eta - 1e-4),
+            "eta_upper": float(100.0 - eta),
+            "power_lower": float(power),
+            "power_upper": float(0.5 - power),
+            "wing_constraint": wing_slack,
+            "curvature_constraint": curvature_slack,
+        }
+        warnings: list[str] = []
+        if projected:
+            warnings.append("observed ATM variance required monotone isotonic projection")
+        if residual_summary.holdout_rmse is not None and residual_summary.holdout_rmse > max(
+            0.02, 3.0 * residual_summary.rmse
+        ):
+            warnings.append("holdout error materially exceeds training error")
+        if sensitivity.classification != "stable":
+            warnings.append("SSVI parameters are sensitive to optimizer initialization")
+        if min(wing_slack, curvature_slack) < 0.05:
+            warnings.append("SSVI solution is close to a sufficient arbitrage constraint")
+        if weight_diagnostics.effective_sample_size < 0.25 * market_vols.size:
+            warnings.append("calibration weights are highly concentrated")
+        poor_fit = (
+            residual_summary.weighted_rmse > 0.03
+            or residual_summary.maximum_absolute_residual > 0.075
+        )
+        if poor_fit:
+            warnings.append("large residuals indicate economically poor quote fit")
+        quality = FitQuality.GOOD
+        if sensitivity.classification != "stable":
+            quality = FitQuality.UNSTABLE
+        if warnings and quality is FitQuality.GOOD:
+            quality = FitQuality.ACCEPTABLE
+        if residual_summary.holdout_rmse is not None and residual_summary.holdout_rmse > max(
+            0.02, 3.0 * residual_summary.rmse
+        ):
+            quality = FitQuality.POOR
+        if poor_fit and quality is not FitQuality.UNSTABLE:
+            quality = FitQuality.POOR
 
         return SSVICalibrationResult(
             surface=surface,
@@ -705,6 +1133,35 @@ class SSVICalibrator:
             maximum_wing_slope=maximum_wing_slope,
             atm_projection_applied=projected,
             observations=int(market_vols.size),
+            calibration_observations=residual_summary.calibration_observations,
+            holdout_observations=residual_summary.holdout_observations,
+            holdout_rmse=residual_summary.holdout_rmse,
+            residuals=residuals,
+            residual_summary=residual_summary,
+            weight_diagnostics=weight_diagnostics,
+            initialization_sensitivity=sensitivity,
+            wing_constraint_slack=wing_slack,
+            curvature_constraint_slack=curvature_slack,
+            parameter_bound_proximity=proximity,
+            atm_projection_absolute_adjustment=absolute_adjustment,
+            atm_projection_relative_adjustment=relative_adjustment,
+            largest_atm_projection_tenor=(
+                float(unique_tenors[largest_index]) if projected else None
+            ),
+            total_weighted_projection_error=weighted_projection_error,
+            atm_projection_adjustments=tuple(
+                (
+                    float(tenor),
+                    float(adjustment),
+                    float(adjustment / max(abs(raw), 1e-12)),
+                )
+                for tenor, raw, adjustment in zip(
+                    unique_tenors, projection[:, 0], adjustments, strict=True
+                )
+            ),
+            interpolation_status="interpolation within calibrated tenor range; extrapolation rejected",
+            fit_quality=quality,
+            numerical_warnings=tuple(warnings),
         )
 
 

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from numbers import Integral, Real
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -13,6 +14,23 @@ from numpy.typing import ArrayLike
 from scipy.optimize import least_squares
 
 from .boards import CleanBoard
+from .validation import (
+    CalibrationError,
+    CalibrationFailureReason,
+    ConditioningDiagnostics,
+    FitQuality,
+    HoldoutPolicy,
+    InitializationSensitivity,
+    OptimizerAttempt,
+    ResidualObservation,
+    ResidualSummary,
+    WeightDiagnostics,
+    analyze_initialization_sensitivity,
+    conditioning_from_jacobian,
+    deterministic_holdout_mask,
+    residual_diagnostics,
+    serializable,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +40,10 @@ class SABRConfig:
     seeds: tuple[int, ...] = (0, 1, 2)
     tolerance: float = 1e-8
     max_iterations: int = 200
+    holdout_policy: str = "none"
+    holdout_fraction: float = 0.2
+    weighting: str = "uniform"
+    spread_floor: float = 1e-4
 
     def __post_init__(self) -> None:
         if (
@@ -62,6 +84,25 @@ class SABRConfig:
             raise ValueError("max_iterations must be an integer within [1, 100000]")
         object.__setattr__(self, "tolerance", float(self.tolerance))
         object.__setattr__(self, "max_iterations", int(self.max_iterations))
+        try:
+            HoldoutPolicy(self.holdout_policy)
+        except ValueError as exc:
+            raise ValueError("unsupported SABR holdout_policy") from exc
+        if not isinstance(self.holdout_fraction, Real) or isinstance(self.holdout_fraction, bool):
+            raise TypeError("holdout_fraction must be a real number")
+        if not math.isfinite(self.holdout_fraction) or not 0.0 <= self.holdout_fraction <= 0.5:
+            raise ValueError("holdout_fraction must be within [0, 0.5]")
+        object.__setattr__(self, "holdout_fraction", float(self.holdout_fraction))
+        if self.weighting not in {"uniform", "auto", "bid_ask"}:
+            raise ValueError("weighting must be 'uniform', 'auto', or 'bid_ask'")
+        if (
+            isinstance(self.spread_floor, bool)
+            or not isinstance(self.spread_floor, Real)
+            or not math.isfinite(self.spread_floor)
+            or not 1e-8 <= self.spread_floor <= 1.0
+        ):
+            raise ValueError("spread_floor must be within [1e-8, 1]")
+        object.__setattr__(self, "spread_floor", float(self.spread_floor))
 
 
 @dataclass(slots=True)
@@ -73,6 +114,37 @@ class SABRTenorResult:
     market_vols: np.ndarray
     model_vols: np.ndarray
     parameter_count: int
+    residuals: tuple[ResidualObservation, ...] = ()
+    residual_summary: ResidualSummary | None = None
+    weight_diagnostics: WeightDiagnostics | None = None
+    initialization_sensitivity: InitializationSensitivity | None = None
+    conditioning: ConditioningDiagnostics | None = None
+    parameter_bound_proximity: dict[str, float] = field(default_factory=dict)
+    fit_quality: str = FitQuality.ACCEPTABLE.value
+    warnings: tuple[str, ...] = ()
+    weighting: str = "uniform"
+    calibrated_strike_range: tuple[float, float] | None = None
+    admissible: bool = True
+    classification_reasons: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        return cast(dict[str, object], serializable(self))
+
+
+@dataclass(slots=True)
+class SABRCalibrationResult:
+    """Detailed SABR audit result; ``calibrate`` retains its list contract."""
+
+    tenor_results: list[SABRTenorResult]
+    calibration_observations: int
+    holdout_observations: int
+    in_sample_weighted_rmse: float
+    holdout_rmse: float | None
+    fit_quality: str
+    warnings: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return cast(dict[str, object], serializable(self))
 
 
 class SABRCalibrator:
@@ -122,9 +194,34 @@ class SABRCalibrator:
 
         for tenor, group in data.groupby("tenor", sort=True):
             tenor_value = float(tenor)
-            smile = group.groupby("strike", as_index=False)["mid_iv"].mean()
+            aggregation: dict[str, str] = {"mid_iv": "mean"}
+            has_spreads = {"bid_iv", "ask_iv"}.issubset(group.columns)
+            if has_spreads:
+                aggregation.update({"bid_iv": "mean", "ask_iv": "mean"})
+            smile = group.groupby("strike", as_index=False).agg(aggregation)
             strikes = smile["strike"].to_numpy(dtype=float)
             market_vols = smile["mid_iv"].to_numpy(dtype=float)
+            weights = np.ones(strikes.size, dtype=float)
+            weighting = "uniform"
+            use_spreads = self._config.weighting == "bid_ask" or (
+                self._config.weighting == "auto" and has_spreads
+            )
+            if self._config.weighting == "bid_ask" and not has_spreads:
+                raise ValueError("SABR bid_ask weighting requires bid_iv and ask_iv")
+            if use_spreads:
+                bid = smile["bid_iv"].to_numpy(dtype=float)
+                ask = smile["ask_iv"].to_numpy(dtype=float)
+                if (
+                    not np.isfinite(bid).all()
+                    or not np.isfinite(ask).all()
+                    or np.any(bid < 0.0)
+                    or np.any(ask < bid)
+                ):
+                    raise ValueError("invalid SABR bid/ask spreads")
+                inverse = 1.0 / np.maximum(ask - bid, self._config.spread_floor) ** 2
+                weights = np.clip(inverse / np.median(inverse), 1e-3, 1e3)
+                weighting = "bid_ask"
+            weights /= float(np.mean(weights))
             minimum_observations = (4 if self._config.fit_beta else 3) + 2
             if strikes.size < minimum_observations:
                 continue
@@ -135,10 +232,60 @@ class SABRCalibrator:
                 strikes,
                 market_vols,
                 warm_start=warm_start,
+                weights=weights,
+                weighting=weighting,
             )
             results.append(res)
             warm_start = self._pack_params(res.params)
         return results
+
+    def calibrate_detailed(
+        self,
+        clean_board: CleanBoard,
+        *,
+        forward_curve: Mapping[float, float] | None = None,
+    ) -> SABRCalibrationResult:
+        """Return aggregate validation evidence without breaking ``calibrate``."""
+
+        results = self.calibrate(clean_board, forward_curve=forward_curve)
+        summaries = [item.residual_summary for item in results if item.residual_summary is not None]
+        training_count = sum(item.calibration_observations for item in summaries)
+        holdout_count = sum(item.holdout_observations for item in summaries)
+        weighted_rmse = (
+            math.sqrt(
+                sum(item.weighted_rmse**2 * item.calibration_observations for item in summaries)
+                / training_count
+            )
+            if training_count
+            else math.nan
+        )
+        holdout_rmse = (
+            math.sqrt(
+                sum(
+                    (item.holdout_rmse or 0.0) ** 2 * item.holdout_observations
+                    for item in summaries
+                )
+                / holdout_count
+            )
+            if holdout_count
+            else None
+        )
+        order = {"good": 0, "acceptable": 1, "poor": 2, "unstable": 3, "invalid": 4}
+        quality = max(
+            (item.fit_quality for item in results),
+            key=lambda value: order[value],
+            default=FitQuality.INVALID.value,
+        )
+        warnings = tuple(dict.fromkeys(warning for item in results for warning in item.warnings))
+        return SABRCalibrationResult(
+            results,
+            training_count,
+            holdout_count,
+            weighted_rmse,
+            holdout_rmse,
+            quality,
+            warnings,
+        )
 
     def _resolve_forward(
         self,
@@ -178,12 +325,36 @@ class SABRCalibrator:
         market_vols: np.ndarray,
         *,
         warm_start: np.ndarray | None,
+        weights: np.ndarray | None = None,
+        weighting: str = "uniform",
     ) -> SABRTenorResult:
         cfg = self._config
 
         seeds: Sequence[int] = cfg.seeds or (0,)
         best_rmse = float("inf")
-        best_result: tuple[np.ndarray, np.ndarray] | None = None
+        best_result: tuple[np.ndarray, np.ndarray, Any] | None = None
+        attempts: list[OptimizerAttempt] = []
+
+        minimum_training = (4 if cfg.fit_beta else 3) + 1
+        holdout = deterministic_holdout_mask(
+            strikes,
+            cfg.holdout_policy,
+            fraction=cfg.holdout_fraction,
+            minimum_training=minimum_training,
+            centre=forward,
+        )
+        training = ~holdout
+        observation_weights = (
+            np.ones(strikes.size, dtype=float)
+            if weights is None
+            else np.asarray(weights, dtype=float)
+        )
+        if (
+            observation_weights.shape != strikes.shape
+            or not np.isfinite(observation_weights).all()
+            or np.any(observation_weights <= 0.0)
+        ):
+            raise ValueError("SABR weights must be finite, positive, and match strikes")
 
         def objective(theta: np.ndarray) -> np.ndarray:
             params = self._unpack_params(theta)
@@ -198,8 +369,9 @@ class SABRCalibrator:
                     nu=params["nu"],
                 )
             except ValueError:
-                return np.full_like(market_vols, 10.0)
-            return np.asarray(model - market_vols, dtype=float)
+                return np.full_like(market_vols[training], 10.0)
+            residual = np.asarray(model - market_vols, dtype=float)
+            return np.asarray((np.sqrt(observation_weights) * residual)[training], dtype=float)
 
         initial = self._initial_guess(forward, strikes, market_vols, warm_start)
         lower = np.array([math.log(1e-8), -4.95, math.log(1e-8)], dtype=float)
@@ -223,20 +395,99 @@ class SABRCalibrator:
                 gtol=cfg.tolerance,
                 max_nfev=cfg.max_iterations,
             )
+            attempt_params = (
+                tuple(self._format_params(result.x).values()) if result.success else None
+            )
+            objective_value = (
+                float(np.mean(result.fun**2))
+                if result.success and np.isfinite(result.fun).all()
+                else None
+            )
+            attempts.append(
+                OptimizerAttempt(
+                    seed=int(seed),
+                    initial_parameters=tuple(float(x) for x in theta0),
+                    success=bool(result.success),
+                    status=int(getattr(result, "status", 0)),
+                    message=str(getattr(result, "message", "optimizer supplied no message")),
+                    objective=objective_value,
+                    parameters=attempt_params,
+                    evaluations=int(getattr(result, "nfev", 0)),
+                )
+            )
             if not result.success:
                 continue
-            model_vols = market_vols + result.fun
-            rmse = float(np.sqrt(np.mean(result.fun**2)))
+            params_for_model = self._unpack_params(result.x)
+            try:
+                model_vols = hagan_implied_volatility(forward, strikes, tenor, **params_for_model)
+            except ValueError:
+                continue
+            rmse = float(np.sqrt(np.mean((model_vols[training] - market_vols[training]) ** 2)))
             if not math.isfinite(rmse) or rmse >= 5.0:
                 continue
             if rmse < best_rmse:
                 best_rmse = rmse
-                best_result = (result.x, model_vols)
+                best_result = (result.x, model_vols, result)
 
         if best_result is None:
-            raise RuntimeError(f"SABR calibration failed for tenor {tenor}")
+            raise CalibrationError(
+                CalibrationFailureReason.OPTIMIZER_FAILED,
+                f"SABR calibration failed for tenor {tenor}",
+            )
 
         params = self._format_params(best_result[0])
+        residuals, summary, weight_diagnostics = residual_diagnostics(
+            tenors=np.full(strikes.size, tenor),
+            strikes=strikes,
+            forwards=np.full(strikes.size, forward),
+            market=market_vols,
+            fitted=best_result[1],
+            weights=observation_weights,
+            holdout=holdout,
+        )
+        sensitivity = analyze_initialization_sensitivity(attempts)
+        lower_e, upper_e = (
+            {"alpha": 1e-8, "rho": -math.tanh(4.95), "nu": 1e-8},
+            {"alpha": 100.0, "rho": math.tanh(4.95), "nu": 10.0},
+        )
+        if cfg.fit_beta:
+            lower_e["beta"], upper_e["beta"] = 0.0001, 0.9999
+        proximity = {
+            name: float(
+                1.0
+                - 2.0
+                * min(
+                    (value - lower_e[name]) / (upper_e[name] - lower_e[name]),
+                    (upper_e[name] - value) / (upper_e[name] - lower_e[name]),
+                )
+            )
+            for name, value in params.items()
+            if name in lower_e
+        }
+        jacobian = getattr(best_result[2], "jac", None)
+        conditioning = conditioning_from_jacobian(jacobian) if jacobian is not None else None
+        warnings: list[str] = []
+        if tenor < 1.0 / 52.0:
+            warnings.append("short-tenor SABR parameters may be weakly identified")
+        if abs(params["rho"]) > 0.95 or params["nu"] > 5.0:
+            warnings.append("parameters are economically extreme")
+        if conditioning is None:
+            warnings.append("optimizer did not provide a Jacobian for conditioning analysis")
+        elif conditioning.weakly_identified:
+            warnings.append("local Jacobian indicates weak parameter identification")
+        quality = (
+            FitQuality.UNSTABLE
+            if (
+                sensitivity.classification != "stable"
+                or (conditioning is not None and conditioning.weakly_identified)
+            )
+            else FitQuality.GOOD
+        )
+        if summary.holdout_rmse is not None and summary.holdout_rmse > max(
+            0.02, 3.0 * summary.rmse
+        ):
+            quality = FitQuality.POOR
+            warnings.append("holdout error materially exceeds training error")
         return SABRTenorResult(
             tenor=float(tenor),
             params=params,
@@ -245,6 +496,21 @@ class SABRCalibrator:
             market_vols=market_vols.copy(),
             model_vols=best_result[1].copy(),
             parameter_count=4 if cfg.fit_beta else 3,
+            residuals=residuals,
+            residual_summary=summary,
+            weight_diagnostics=weight_diagnostics,
+            initialization_sensitivity=sensitivity,
+            conditioning=conditioning,
+            parameter_bound_proximity=proximity,
+            fit_quality=quality.value,
+            warnings=tuple(warnings),
+            weighting=weighting,
+            calibrated_strike_range=(
+                float(np.min(strikes[training])),
+                float(np.max(strikes[training])),
+            ),
+            admissible=True,
+            classification_reasons=tuple(warnings),
         )
 
     def _initial_guess(

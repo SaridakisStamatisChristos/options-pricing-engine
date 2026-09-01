@@ -1,0 +1,58 @@
+{
+  "cases": {
+    "adversarial_gross_outlier": {
+      "fit_quality": "poor",
+      "holdout_rmse": null,
+      "maximum_calendar_decrease": 0.0,
+      "minimum_density_factor": 0.2940215278990799,
+      "rmse": 0.045859230089613824,
+      "weighted_rmse": 0.045859230089613824
+    },
+    "heston_global": {
+      "fit_quality": "acceptable",
+      "holdout_rmse": 1.027689621640259e-09,
+      "in_sample_weighted_rmse": 5.022326755733802e-10,
+      "strike_holdout_rmse": 1.027689621640259e-09,
+      "tenor_holdout_rmse": null
+    },
+    "heston_per_tenor": {
+      "fit_quality": "acceptable",
+      "holdout_rmse": 4.2112424768587016e-07,
+      "in_sample_weighted_rmse": 6.451328295863549e-08,
+      "strike_holdout_rmse": 4.2112424768587016e-07,
+      "tenor_holdout_rmse": null
+    },
+    "sabr_noise_free": {
+      "fit_quality": "good",
+      "rmse": 1.9631674813835693e-15
+    },
+    "sabr_noisy": {
+      "fit_quality": "good",
+      "rmse": 0.0002088074324139986
+    },
+    "ssvi_noise_free": {
+      "fit_quality": "good",
+      "holdout_rmse": 4.324981640369286e-15,
+      "maximum_calendar_decrease": 0.0,
+      "minimum_density_factor": 0.3499495911729657,
+      "rmse": 5.170173792394059e-15,
+      "weighted_rmse": 5.170173792394059e-15
+    },
+    "ssvi_noisy": {
+      "fit_quality": "good",
+      "holdout_rmse": 0.0005696073862567675,
+      "maximum_calendar_decrease": 0.0,
+      "minimum_density_factor": 0.3489537925320007,
+      "rmse": 0.0002494129201700929,
+      "weighted_rmse": 0.0002494129201700929
+    }
+  },
+  "determinism": "No wall-clock timestamps or unseeded random state are used.",
+  "independence": {
+    "heston_generator": "Fang-Oosterlee COS",
+    "heston_recovery": "Gauss-Laguerre",
+    "sabr_inverse_crime": "Hagan formula generates and recovers; observable recovery only.",
+    "ssvi_inverse_crime": "Power-law SSVI generates and recovers; observable recovery only."
+  },
+  "schema_version": 2
+}

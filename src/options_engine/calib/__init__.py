@@ -1,6 +1,14 @@
 """Volatility surface calibration pipeline."""
 
 from .boards import BoardCleaner, CleanBoard
+from .datasets import (
+    AdversarialBoard,
+    SyntheticBoard,
+    adversarial_board,
+    heston_recovery_board,
+    sabr_recovery_board,
+    ssvi_recovery_board,
+)
 from .heston import (
     HestonCalibrationComparison,
     HestonCalibrationResult,
@@ -19,9 +27,12 @@ from .heston_cos import (
     heston_cos_call_prices_with_diagnostics,
     heston_cos_implied_volatilities,
 )
-from .sabr import SABRCalibrator, SABRConfig, SABRTenorResult
+from .sabr import SABRCalibrationResult, SABRCalibrator, SABRConfig, SABRTenorResult
 from .select import SurfaceBuilder, SurfaceBuildResult, TenorSelection
 from .svi import (
+    RawSVICalibrationResult,
+    RawSVICalibrator,
+    RawSVIConfig,
     SSVICalibrationResult,
     SSVICalibrator,
     SSVIConfig,
@@ -33,11 +44,32 @@ from .svi import (
     svi_density_factor,
     validate_svi_slice,
 )
+from .validation import (
+    CalibrationError,
+    CalibrationFailureReason,
+    ConditioningDiagnostics,
+    FitQuality,
+    HoldoutPolicy,
+    InitializationSensitivity,
+    OptimizerAttempt,
+    ResidualObservation,
+    ResidualSummary,
+    WeightDiagnostics,
+    analyze_initialization_sensitivity,
+    conditioning_from_jacobian,
+    deterministic_holdout_mask,
+    residual_diagnostics,
+)
 from .validators import NoArbitrageValidator, ValidationReport
 
 __all__ = [
+    "AdversarialBoard",
     "BoardCleaner",
+    "CalibrationError",
+    "CalibrationFailureReason",
     "CleanBoard",
+    "ConditioningDiagnostics",
+    "FitQuality",
     "HestonCOSConfig",
     "HestonCOSDiagnostics",
     "HestonCalibrationComparison",
@@ -47,7 +79,16 @@ __all__ = [
     "HestonOptimizerDiagnostics",
     "HestonQECalibrator",
     "HestonTenorResult",
+    "HoldoutPolicy",
+    "InitializationSensitivity",
     "NoArbitrageValidator",
+    "OptimizerAttempt",
+    "RawSVICalibrationResult",
+    "RawSVICalibrator",
+    "RawSVIConfig",
+    "ResidualObservation",
+    "ResidualSummary",
+    "SABRCalibrationResult",
     "SABRCalibrator",
     "SABRConfig",
     "SABRTenorResult",
@@ -59,14 +100,24 @@ __all__ = [
     "SVIParameters",
     "SurfaceBuildResult",
     "SurfaceBuilder",
+    "SyntheticBoard",
     "TenorSelection",
     "ValidationReport",
+    "WeightDiagnostics",
+    "adversarial_board",
+    "analyze_initialization_sensitivity",
+    "conditioning_from_jacobian",
+    "deterministic_holdout_mask",
     "heston_call_prices",
     "heston_cos_call_prices",
     "heston_cos_call_prices_with_diagnostics",
     "heston_cos_implied_volatilities",
     "heston_implied_volatilities",
+    "heston_recovery_board",
     "raw_svi_total_variance",
+    "residual_diagnostics",
+    "sabr_recovery_board",
+    "ssvi_recovery_board",
     "ssvi_total_variance",
     "svi_density_factor",
     "validate_svi_slice",
